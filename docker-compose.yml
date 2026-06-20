@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cf}
+      POSTGRES_DB: ${POSTGRES_DB:-content_factory}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cf} -d ${POSTGRES_DB:-content_factory}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./runs:/app/runs
+      - ./inputs:/app/inputs
+
+volumes:
+  pgdata:

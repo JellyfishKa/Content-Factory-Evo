@@ -1,0 +1,28 @@
+run:
+  scenarios: 3
+  language: ru
+
+models:
+  planner:    "meta-llama/llama-3.1-8b-instruct:free"
+  researcher: "meta-llama/llama-3.1-8b-instruct:free"
+  writer:     "mistralai/mistral-7b-instruct:free"
+  editor:     "mistralai/mistral-7b-instruct:free"
+  seo:        "meta-llama/llama-3.1-8b-instruct:free"
+
+limits:
+  article_chars: [800, 1100]
+  post_words:    [100, 300]
+
+style:
+  blacklist:
+    - "всем привет"
+    - "сегодня расскажу"
+    - "давайте"
+    - "надеюсь, было полезно"
+    - "подписывайтесь"
+  require_number_in_first_screen: true
+  hashtags_as_single_block: true
+  no_caps_for_claude: true
+
+llm:
+  max_retries: 1

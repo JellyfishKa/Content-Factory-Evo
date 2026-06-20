@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+runs/*
+!runs/.gitkeep
+.pytest_cache/
+*.egg-info/
+/.omc
+content-factory-lite_план_и_таски.md
