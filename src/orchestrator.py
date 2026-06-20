@@ -76,9 +76,10 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
 
     force_from = stage_index(from_stage) if from_stage else None
 
-    def should_run(stage_name: str) -> bool:
+    def should_force(stage_name: str) -> bool:
+        """True if this stage must be (re)run even if an artifact already exists."""
         if force_from is None:
-            return True
+            return False
         return stage_index(stage_name) >= force_from
 
     init_db()
@@ -96,22 +97,19 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
     style_results: list[tuple[str, bool]] = []
 
     # --- planner ---
-    existing_scenarios = get_artifact(conn, scenario_id=None, kind="scenarios_done") if False else None
     try:
-        if should_run("planner") or from_stage is None:
-            scenarios = run_planner(source, cfg, llm, n=n_scenarios)
-            for sc in scenarios:
-                upsert_scenario(
-                    conn,
-                    run_id=run_id,
-                    idx=sc.idx,
-                    topic=sc.topic,
-                    angle=sc.angle,
-                    brief_hint=sc.brief_hint,
-                )
-            built.append("planner: scenarios")
-        else:
-            scenarios = run_planner(source, cfg, llm, n=n_scenarios)
+        scenarios = run_planner(source, cfg, llm, n=n_scenarios)
+        scenario_ids: dict[int, int] = {}
+        for sc in scenarios:
+            scenario_ids[sc.idx] = upsert_scenario(
+                conn,
+                run_id=run_id,
+                idx=sc.idx,
+                topic=sc.topic,
+                angle=sc.angle,
+                brief_hint=sc.brief_hint,
+            )
+        built.append(f"planner: {len(scenarios)} scenarios")
     except Exception as exc:  # LLMContractError or validation error
         print(f"ERROR in stage 'planner': {exc}")
         failed.append("planner")
@@ -119,61 +117,61 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
         return 1
 
     for scenario in scenarios:
-        scenario_id = scenario.idx  # simplified: idx used as identity within this run
+        scenario_id = scenario_ids[scenario.idx]
 
         try:
-            if should_run("researcher"):
-                existing = get_artifact(conn, scenario_id=scenario_id, kind="brief")
-                if existing and from_stage is None:
-                    built.append(f"scenario {scenario_id}: brief (skipped, exists)")
-                else:
-                    brief = run_researcher(scenario, cfg, llm)
-                    built.append(f"scenario {scenario_id}: brief")
-            else:
+            existing = get_artifact(conn, scenario_id=scenario_id, kind="brief")
+            if existing and not should_force("researcher"):
+                built.append(f"scenario {scenario_id}: brief (skipped, exists)")
                 brief = run_researcher(scenario, cfg, llm)
+            else:
+                brief = run_researcher(scenario, cfg, llm, conn=conn)
+                built.append(f"scenario {scenario_id}: brief")
         except Exception as exc:
             print(f"ERROR in stage 'researcher' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: researcher")
             continue
 
         try:
-            if should_run("writer"):
-                existing_article = get_artifact(conn, scenario_id=scenario_id, kind="draft_article")
-                existing_post = get_artifact(conn, scenario_id=scenario_id, kind="draft_post")
-                if existing_article and existing_post and from_stage is None:
-                    built.append(f"scenario {scenario_id}: draft_article, draft_post (skipped, exists)")
-                    draft_article, draft_post = run_writer(scenario, brief, cfg, llm)
-                else:
-                    draft_article, draft_post = run_writer(scenario, brief, cfg, llm)
-                    built.append(f"scenario {scenario_id}: draft_article, draft_post")
-            else:
+            existing_article = get_artifact(conn, scenario_id=scenario_id, kind="draft_article")
+            existing_post = get_artifact(conn, scenario_id=scenario_id, kind="draft_post")
+            if existing_article and existing_post and not should_force("writer"):
+                built.append(f"scenario {scenario_id}: draft_article, draft_post (skipped, exists)")
                 draft_article, draft_post = run_writer(scenario, brief, cfg, llm)
+            else:
+                draft_article, draft_post = run_writer(scenario, brief, cfg, llm, conn=conn)
+                built.append(f"scenario {scenario_id}: draft_article, draft_post")
         except Exception as exc:
             print(f"ERROR in stage 'writer' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: writer")
             continue
 
         try:
-            if should_run("editor"):
+            existing_final_article = get_artifact(conn, scenario_id=scenario_id, kind="final_article")
+            existing_final_post = get_artifact(conn, scenario_id=scenario_id, kind="final_post")
+            if existing_final_article and existing_final_post and not should_force("editor"):
+                built.append(f"scenario {scenario_id}: final_article, final_post (skipped, exists)")
                 final_article, checks_article = run_editor(draft_article, cfg, llm)
                 final_post, checks_post = run_editor(draft_post, cfg, llm)
-                built.append(f"scenario {scenario_id}: final_article, final_post")
-                style_results.append((f"scenario {scenario_id}: article", final_article.style_passed))
-                style_results.append((f"scenario {scenario_id}: post", final_post.style_passed))
             else:
-                final_article, checks_article = run_editor(draft_article, cfg, llm)
-                final_post, checks_post = run_editor(draft_post, cfg, llm)
+                final_article, checks_article = run_editor(draft_article, cfg, llm, conn=conn, scenario_id=scenario_id)
+                final_post, checks_post = run_editor(draft_post, cfg, llm, conn=conn, scenario_id=scenario_id)
+                built.append(f"scenario {scenario_id}: final_article, final_post")
+            style_results.append((f"scenario {scenario_id}: article", final_article.style_passed))
+            style_results.append((f"scenario {scenario_id}: post", final_post.style_passed))
         except Exception as exc:
             print(f"ERROR in stage 'editor' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: editor")
             continue
 
         try:
-            if should_run("seo"):
+            existing_meta = get_artifact(conn, scenario_id=scenario_id, kind="meta")
+            if existing_meta and not should_force("seo"):
+                built.append(f"scenario {scenario_id}: meta (skipped, exists)")
                 meta = run_seo(final_article, cfg, llm)
-                built.append(f"scenario {scenario_id}: meta")
             else:
-                meta = run_seo(final_article, cfg, llm)
+                meta = run_seo(final_article, cfg, llm, conn=conn, scenario_id=scenario_id)
+                built.append(f"scenario {scenario_id}: meta")
         except Exception as exc:
             print(f"ERROR in stage 'seo' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: seo")
