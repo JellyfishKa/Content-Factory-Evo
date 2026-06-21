@@ -11,6 +11,20 @@ from pathlib import Path
 from src.db import save_artifact
 from src.schemas import Brief, Scenario
 
+PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "researcher.md"
+
+
+def _load_prompt() -> str:
+    return PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _build_user_message(scenario: Scenario) -> str:
+    return (
+        f"Тема: {scenario.topic}\n"
+        f"Ракурс: {scenario.angle}\n"
+        f"Подсказка для брифа: {scenario.brief_hint}"
+    )
+
 
 def run_researcher(scenario: Scenario, cfg: dict, llm, conn=None) -> Brief:
     """Runs the researcher stage using LLM to generate a Brief from a Scenario."""

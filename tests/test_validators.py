@@ -132,3 +132,30 @@ def test_run_all_fail_post():
     assert len(results) == 6
     failed_rules = {r.rule for r in results if not r.passed}
     assert "check_blacklist" in failed_rules
+
+
+# check_max_sentence_length
+
+def test_check_max_sentence_length_pass():
+    text = "Это короткое предложение. Вот ещё одно, тоже короткое."
+    result = validators.check_max_sentence_length(text, CFG)
+    assert result.passed is True
+
+
+def test_check_max_sentence_length_fail():
+    text = "слово " * 50 + "."
+    result = validators.check_max_sentence_length(text, CFG)
+    assert result.passed is False
+
+
+# check_no_repeated_words
+
+def test_check_no_repeated_words_pass():
+    result = validators.check_no_repeated_words("Это очень хороший текст без повторов.", CFG)
+    assert result.passed is True
+
+
+def test_check_no_repeated_words_fail():
+    result = validators.check_no_repeated_words("Это очень очень хороший текст.", CFG)
+    assert result.passed is False
+    assert "очень" in result.detail.lower()

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import yaml
@@ -43,20 +44,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
-    from db import (
-        init_db,
-        get_connection,
-        create_run,
-        upsert_scenario,
-        get_artifact,
-    )
+    from db import init_db, get_connection, create_run, upsert_scenario
     from schemas import Source
     from llm import LLM
     from stages.planner import run_planner
-    from stages.researcher import run_researcher
-    from stages.writer import run_writer
-    from stages.editor import run_editor
-    from stages.seo import run_seo
 
     input_path = Path(args.input)
     if not input_path.exists():
@@ -96,7 +87,7 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
     failed: list[str] = []
     style_results: list[tuple[str, bool]] = []
 
-    # --- planner ---
+    # --- planner (stays sequential, before the fan-out) ---
     try:
         scenarios = run_planner(source, cfg, llm, n=n_scenarios)
         scenario_ids: dict[int, int] = {}
@@ -116,21 +107,64 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
         _print_summary(built, failed, style_results)
         return 1
 
-    for scenario in scenarios:
-        scenario_id = scenario_ids[scenario.idx]
+    # --- researcher/writer/editor/seo fan out across scenarios ---
+    # psycopg connections aren't thread-safe to share, so each worker opens
+    # its own connection (simpler and correct vs. sharing one under a lock).
+    n_workers = cfg.get("run", {}).get("workers", 3)
+    results: list[tuple[list[str], list[str], list[tuple[str, bool]]]] = []
 
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = {
+            executor.submit(
+                process_scenario, scenario, scenario_ids[scenario.idx], cfg, llm, should_force
+            ): scenario
+            for scenario in scenarios
+        }
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    for scenario_built, scenario_failed, scenario_style in results:
+        built.extend(scenario_built)
+        failed.extend(scenario_failed)
+        style_results.extend(scenario_style)
+
+    _print_summary(built, failed, style_results)
+    return 0 if not failed else 1
+
+
+def process_scenario(
+    scenario, scenario_id: int, cfg: dict, llm, should_force
+) -> tuple[list[str], list[str], list[tuple[str, bool]]]:
+    """Runs researcher -> writer -> editor -> seo for one scenario.
+
+    Opens its own DB connection (psycopg connections are not thread-safe to
+    share across workers). Returns (built, failed, style_results) for the
+    caller to aggregate; never raises - errors are recorded in `failed`.
+    """
+    from db import get_connection, get_artifact
+    from stages.researcher import run_researcher
+    from stages.writer import run_writer
+    from stages.editor import run_editor
+    from stages.seo import run_seo
+
+    conn = get_connection()
+    built: list[str] = []
+    failed: list[str] = []
+    style_results: list[tuple[str, bool]] = []
+
+    try:
         try:
             existing = get_artifact(conn, scenario_id=scenario_id, kind="brief")
             if existing and not should_force("researcher"):
                 built.append(f"scenario {scenario_id}: brief (skipped, exists)")
                 brief = run_researcher(scenario, cfg, llm)
             else:
-                brief = run_researcher(scenario, cfg, llm, conn=conn)
+                brief = run_researcher(scenario, cfg, llm, conn=conn, scenario_id=scenario_id)
                 built.append(f"scenario {scenario_id}: brief")
         except Exception as exc:
             print(f"ERROR in stage 'researcher' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: researcher")
-            continue
+            return built, failed, style_results
 
         try:
             existing_article = get_artifact(conn, scenario_id=scenario_id, kind="draft_article")
@@ -144,7 +178,7 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
         except Exception as exc:
             print(f"ERROR in stage 'writer' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: writer")
-            continue
+            return built, failed, style_results
 
         try:
             existing_final_article = get_artifact(conn, scenario_id=scenario_id, kind="final_article")
@@ -162,23 +196,24 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
         except Exception as exc:
             print(f"ERROR in stage 'editor' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: editor")
-            continue
+            return built, failed, style_results
 
         try:
             existing_meta = get_artifact(conn, scenario_id=scenario_id, kind="meta")
             if existing_meta and not should_force("seo"):
                 built.append(f"scenario {scenario_id}: meta (skipped, exists)")
-                meta = run_seo(final_article, cfg, llm)
+                run_seo(final_article, cfg, llm)
             else:
-                meta = run_seo(final_article, cfg, llm, conn=conn, scenario_id=scenario_id)
+                run_seo(final_article, cfg, llm, conn=conn, scenario_id=scenario_id)
                 built.append(f"scenario {scenario_id}: meta")
         except Exception as exc:
             print(f"ERROR in stage 'seo' (scenario {scenario_id}): {exc}")
             failed.append(f"scenario {scenario_id}: seo")
-            continue
+            return built, failed, style_results
 
-    _print_summary(built, failed, style_results)
-    return 0 if not failed else 1
+        return built, failed, style_results
+    finally:
+        conn.close()
 
 
 def _print_summary(built: list[str], failed: list[str], style_results: list[tuple[str, bool]]) -> None:

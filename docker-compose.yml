@@ -28,5 +28,20 @@ services:
       - ./config.yaml:/app/config.yaml
       - ./prompts:/app/prompts
 
+  viewer:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - ./config.yaml:/app/config.yaml
+    ports:
+      - "8000:8000"
+    working_dir: /app/src
+    command: ["uvicorn", "viewer:app", "--host", "0.0.0.0", "--port", "8000"]
+
 volumes:
   pgdata:

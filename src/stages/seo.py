@@ -9,8 +9,19 @@ import json
 import re
 from pathlib import Path
 
-from src.db import save_artifact
-from src.schemas import Final, Meta
+from db import save_artifact
+from llm import LLM, LLMContractError
+from schemas import Final, Meta
+
+PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "seo.md"
+
+
+def _load_prompt() -> str:
+    return PROMPT_PATH.read_text(encoding="utf-8")
+
+
+def _build_user_message(final: Final) -> str:
+    return f"Заголовок: {final.title}\n\nТекст:\n{final.body}"
 
 
 def _fallback_slugify(title: str) -> str:
