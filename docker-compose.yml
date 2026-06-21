@@ -16,6 +16,9 @@ services:
 
   app:
     build: .
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       db:
         condition: service_healthy
@@ -27,6 +30,9 @@ services:
       - ./src:/app/src
       - ./config.yaml:/app/config.yaml
       - ./prompts:/app/prompts
+    # На `up` фабрика сама прогоняет конвейер и наполняет БД (идемпотентно:
+    # повторный up не пересчитывает готовое). Вьювер показывает результат.
+    command: ["python", "src/orchestrator.py", "--input", "inputs/transcript.txt"]
 
   viewer:
     build: .

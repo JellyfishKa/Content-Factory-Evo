@@ -43,11 +43,18 @@ def _build_user_message(scenario: Scenario, brief: Brief) -> str:
 
 
 def _parse_drafts(raw: dict) -> tuple[Draft, Draft]:
-    if not isinstance(raw, dict) or "article" not in raw or "post" not in raw:
+    if not isinstance(raw, dict):
         raise ValueError(f"expected a JSON object with 'article' and 'post', got {raw!r}")
 
-    article_raw = raw["article"]
-    post_raw = raw["post"]
+    article_raw = raw.get("article")
+    post_raw = raw.get("post")
+    # Some models nest "post" inside "article" instead of at the top level.
+    if isinstance(article_raw, dict) and post_raw is None and isinstance(article_raw.get("post"), dict):
+        post_raw = article_raw["post"]
+        article_raw = {k: v for k, v in article_raw.items() if k != "post"}
+
+    if not isinstance(article_raw, dict) or not isinstance(post_raw, dict):
+        raise ValueError(f"expected 'article' and 'post' objects, got {raw!r}")
 
     article = Draft(kind="article", title=article_raw["title"], body=article_raw["body"])
     post = Draft(kind="post", title=post_raw["title"], body=post_raw["body"])
