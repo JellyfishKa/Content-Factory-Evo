@@ -1,6 +1,7 @@
 run:
   scenarios: 3
   language: ru
+  workers: 3
 
 # Модели на стадию. Дефолт — проверенные рабочие free-тиры OpenRouter (июнь 2026).
 # Если стадия ловит 429/402/404 — подставь другую из блока "Альтернативы" ниже.
@@ -37,6 +38,7 @@ style:
   require_number_in_first_screen: true
   hashtags_as_single_block: true
   no_caps_for_claude: true
+  max_sentence_words: 40
 
 llm:
   max_retries: 1

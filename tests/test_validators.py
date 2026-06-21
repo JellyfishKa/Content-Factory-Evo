@@ -122,7 +122,7 @@ def test_run_all_pass_article():
     final = Final(kind="article", title="t", body=_article_body(900), style_passed=True)
     results = validators.run_all(final, CFG)
     assert all(r.passed for r in results)
-    assert len(results) == 5  # no hashtag check for articles
+    assert len(results) == 7  # no hashtag check for articles
 
 
 def test_run_all_fail_post():
@@ -133,6 +133,33 @@ def test_run_all_fail_post():
         style_passed=True,
     )
     results = validators.run_all(final, CFG)
-    assert len(results) == 6  # hashtag check applies to posts
+    assert len(results) == 8  # hashtag check applies to posts
     failed_rules = {r.rule for r in results if not r.passed}
     assert "check_blacklist" in failed_rules
+
+
+# check_max_sentence_length
+
+def test_check_max_sentence_length_pass():
+    text = "Это короткое предложение. Вот ещё одно, тоже короткое."
+    result = validators.check_max_sentence_length(text, CFG)
+    assert result.passed is True
+
+
+def test_check_max_sentence_length_fail():
+    text = "слово " * 50 + "."
+    result = validators.check_max_sentence_length(text, CFG)
+    assert result.passed is False
+
+
+# check_no_repeated_words
+
+def test_check_no_repeated_words_pass():
+    result = validators.check_no_repeated_words("Это очень хороший текст без повторов.", CFG)
+    assert result.passed is True
+
+
+def test_check_no_repeated_words_fail():
+    result = validators.check_no_repeated_words("Это очень очень хороший текст.", CFG)
+    assert result.passed is False
+    assert "очень" in result.detail.lower()

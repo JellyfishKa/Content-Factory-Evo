@@ -68,10 +68,17 @@ def run_editor(
 
     try:
         raw = llm.complete_json(model, system, user)
-        title = raw["title"]
-        body = raw["body"]
-    except (LLMContractError, KeyError, TypeError) as exc:
+    except LLMContractError as exc:
         raise LLMContractError(f"editor failed to produce a valid final for '{draft.title}': {exc}") from exc
+
+    if not isinstance(raw, dict) or "title" not in raw or "body" not in raw:
+        raise LLMContractError(
+            f"editor returned a malformed contract for '{draft.title}': expected a JSON object "
+            f"with 'title' and 'body', got {raw!r}"
+        )
+
+    title = raw["title"]
+    body = raw["body"]
 
     final = Final(kind=draft.kind, title=title, body=body, style_passed=False)
     checks = validators.run_all(final, cfg)
