@@ -24,6 +24,9 @@ services:
     volumes:
       - ./runs:/app/runs
       - ./inputs:/app/inputs
+      - ./src:/app/src
+      - ./config.yaml:/app/config.yaml
+      - ./prompts:/app/prompts
 
 volumes:
   pgdata:

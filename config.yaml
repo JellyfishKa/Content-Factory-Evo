@@ -2,12 +2,26 @@ run:
   scenarios: 3
   language: ru
 
+# Модели на стадию. Дефолт — проверенные рабочие free-тиры OpenRouter (июнь 2026).
+# Если стадия ловит 429/402/404 — подставь другую из блока "Альтернативы" ниже.
 models:
-  planner:    "meta-llama/llama-3.1-8b-instruct:free"
-  researcher: "meta-llama/llama-3.1-8b-instruct:free"
-  writer:     "mistralai/mistral-7b-instruct:free"
-  editor:     "mistralai/mistral-7b-instruct:free"
-  seo:        "meta-llama/llama-3.1-8b-instruct:free"
+  planner:    "openai/gpt-oss-20b:free"
+  researcher: "openai/gpt-oss-20b:free"
+  writer:     "openai/gpt-oss-20b:free"
+  editor:     "openai/gpt-oss-120b:free"
+  seo:        "openai/gpt-oss-20b:free"
+
+# Альтернативы (проверены на 200 при $0, июнь 2026) — раскомментируй и подставь:
+#   Топ-качество : openai/gpt-oss-120b:free
+#                  nvidia/nemotron-3-super-120b-a12b:free
+#   Баланс       : openai/gpt-oss-20b:free            # дефолт, тянул полный прогон
+#                  google/gemma-4-31b-it:free
+#   Быстрые      : google/gemma-4-26b-a4b-it:free     # MoE, шустрый
+#                  nvidia/nemotron-nano-9b-v2:free    # лёгкий
+#   Мерцают (429): meta-llama/llama-3.3-70b-instruct:free
+#                  qwen/qwen3-next-80b-a3b-instruct:free
+#                  nousresearch/hermes-3-llama-3.1-405b:free
+# Свежий список:  curl -s https://openrouter.ai/api/v1/models | ... | grep ':free'
 
 limits:
   article_chars: [800, 1100]

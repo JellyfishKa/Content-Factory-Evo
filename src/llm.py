@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 
 import httpx
 
@@ -45,14 +46,38 @@ class LLM:
 
         print(f"[llm] -> model={model} system[:80]={system[:80]!r} user[:80]={user[:80]!r}")
 
-        with httpx.Client(timeout=self.timeout) as client:
-            resp = client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        # Force IPv4 (containers often lack an IPv6 route -> ENETUNREACH) and
+        # retry transient connection failures common on free endpoints.
+        transport = httpx.HTTPTransport(local_address="0.0.0.0", retries=2)
+        with httpx.Client(timeout=self.timeout, transport=transport) as client:
+            data = self._post_with_backoff(client, url, headers, payload)
 
         content = data["choices"][0]["message"]["content"]
         print(f"[llm] <- content[:120]={content[:120]!r}")
         return content
+
+    def _post_with_backoff(self, client, url, headers, payload, attempts: int = 5) -> dict:
+        """POST with backoff on 429/5xx — free endpoints are frequently busy."""
+        for attempt in range(attempts):
+            resp = client.post(url, headers=headers, json=payload)
+            if resp.status_code in (429, 500, 502, 503, 504) and attempt < attempts - 1:
+                wait = self._retry_after(resp) or min(2 ** attempt, 30)
+                print(f"[llm] {resp.status_code} from provider, retry in {wait}s ({attempt + 1}/{attempts - 1})")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        raise RuntimeError("unreachable")  # loop always returns or raises
+
+    @staticmethod
+    def _retry_after(resp) -> float | None:
+        value = resp.headers.get("Retry-After")
+        if not value:
+            return None
+        try:
+            return float(value)
+        except ValueError:
+            return None
 
     def complete_json(self, model: str, system: str, user: str) -> dict | list:
         """Calls `complete` with json_mode=True, parses JSON. On parse failure,
