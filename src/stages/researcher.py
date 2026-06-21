@@ -1,16 +1,15 @@
 """Researcher stage: scenario -> Brief.
 
-Calls the LLM with prompts/researcher.md, parses the response into a
-Brief, and saves it as artifact kind="brief". Hard rule from the prompt:
-never invent facts — anything uncertain goes into not_confirmed.
+Generates a research Brief based on a specific Scenario and source text,
+strictly avoiding hallucinations. Uses prompts/researcher.md.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from db import save_artifact
-from llm import LLM, LLMContractError
-from schemas import Brief, Scenario
+from src.db import save_artifact
+from src.schemas import Brief, Scenario
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "researcher.md"
 
@@ -27,35 +26,47 @@ def _build_user_message(scenario: Scenario) -> str:
     )
 
 
-def _parse_brief(raw: dict) -> Brief:
-    if not isinstance(raw, dict):
-        raise ValueError(f"expected a JSON object, got {type(raw)}")
-    return Brief(
-        facts=raw.get("facts", []),
-        confirmed=raw.get("confirmed", []),
-        not_confirmed=raw.get("not_confirmed", []),
-        quotes=raw.get("quotes", []),
+def run_researcher(scenario: Scenario, cfg: dict, llm, conn=None) -> Brief:
+    """Runs the researcher stage using LLM to generate a Brief from a Scenario."""
+
+    prompt_path = Path("prompts/researcher.md")
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
+
+    system_prompt = prompt_path.read_text(encoding="utf-8")
+
+    source_text = cfg.get("source_text", "")
+
+    user_prompt = (
+        f"Текст источника:\n{source_text}\n\n"
+        f"--- \n"
+        f"Сценарий для брифа:\n"
+        f"Тема (topic): {scenario.topic}\n"
+        f"Ракурс (angle): {scenario.angle}\n"
+        f"Подсказка (brief_hint): {scenario.brief_hint}\n"
     )
 
+    raw_response = llm.complete_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt
+    )
 
-def run_researcher(scenario: Scenario, cfg: dict, llm: LLM, conn=None, scenario_id: int | None = None) -> Brief:
-    """Builds a Brief for one scenario via the researcher LLM.
+    if isinstance(raw_response, str):
+        try:
+            parsed_data = json.loads(raw_response)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LLM returned invalid JSON: {raw_response}") from e
+    else:
+        parsed_data = raw_response
 
-    If `conn` is given, saves the brief as artifact kind="brief". Falls back
-    to scenario.idx when scenario_id is not given, matching the current
-    orchestrator call site (stages/orchestrator wiring is out of scope here).
-    """
-    system = _load_prompt()
-    user = _build_user_message(scenario)
-    model = cfg["models"]["researcher"]
-
-    try:
-        raw = llm.complete_json(model, system, user)
-        brief = _parse_brief(raw)
-    except (LLMContractError, ValueError, KeyError) as exc:
-        raise LLMContractError(f"researcher failed to produce a valid brief for '{scenario.topic}': {exc}") from exc
+    brief = Brief(**parsed_data)
 
     if conn is not None:
-        save_artifact(conn, scenario_id=scenario_id or scenario.idx, kind="brief", content=brief.model_dump_json())
+        save_artifact(
+            conn,
+            scenario_id=scenario.idx,
+            kind="brief",
+            content=brief.model_dump_json()
+        )
 
     return brief
