@@ -122,6 +122,37 @@ def check_length(text: str, kind: str, cfg: dict) -> CheckResult:
     )
 
 
+def check_max_sentence_length(text: str, cfg: dict) -> CheckResult:
+    """No sentence longer than style.max_sentence_words words (default 40)."""
+    max_words = cfg.get("style", {}).get("max_sentence_words", 40)
+    sentences = re.split(r"(?<=[.!?…])\s+", text.strip())
+    too_long = []
+    for sentence in sentences:
+        words = sentence.split()
+        if len(words) > max_words:
+            too_long.append(f"{len(words)} слов: {sentence[:60]}...")
+    if too_long:
+        return CheckResult(
+            rule="check_max_sentence_length",
+            passed=False,
+            detail=f"Найдены предложения длиннее {max_words} слов: " + "; ".join(too_long[:3]),
+        )
+    return CheckResult(rule="check_max_sentence_length", passed=True, detail="")
+
+
+def check_no_repeated_words(text: str, cfg: dict) -> CheckResult:
+    """No immediate duplicated word like 'очень очень'."""
+    pattern = re.compile(r"\b(\w+)\s+\1\b", re.IGNORECASE | re.UNICODE)
+    hits = pattern.findall(text)
+    if hits:
+        return CheckResult(
+            rule="check_no_repeated_words",
+            passed=False,
+            detail=f"Найдены повторённые подряд слова: {', '.join(sorted(set(hits)))}",
+        )
+    return CheckResult(rule="check_no_repeated_words", passed=True, detail="")
+
+
 def run_all(final: Final, cfg: dict) -> list[CheckResult]:
     """Runs all checks applicable to final.kind (hashtags only matter for posts)."""
     text = final.body
@@ -131,6 +162,8 @@ def run_all(final: Final, cfg: dict) -> list[CheckResult]:
         check_no_signoff(text),
         check_no_caps_for_claude(text, cfg),
         check_length(text, final.kind, cfg),
+        check_max_sentence_length(text, cfg),
+        check_no_repeated_words(text, cfg),
     ]
     if final.kind == "post":
         results.append(check_hashtags_single_block(text))
