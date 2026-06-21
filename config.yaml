@@ -6,11 +6,11 @@ run:
 # Модели на стадию. Дефолт — проверенные рабочие free-тиры OpenRouter (июнь 2026).
 # Если стадия ловит 429/402/404 — подставь другую из блока "Альтернативы" ниже.
 models:
-  planner:    "openai/gpt-oss-20b:free"
-  researcher: "openai/gpt-oss-20b:free"
-  writer:     "openai/gpt-oss-20b:free"
+  planner:    "openai/gpt-oss-120b:free"
+  researcher: "openai/gpt-oss-120b:free"
+  writer:     "openai/gpt-oss-120b:free"
   editor:     "openai/gpt-oss-120b:free"
-  seo:        "openai/gpt-oss-20b:free"
+  seo:        "openai/gpt-oss-120b:free"
 
 # Альтернативы (проверены на 200 при $0, июнь 2026) — раскомментируй и подставь:
 #   Топ-качество : openai/gpt-oss-120b:free
@@ -47,5 +47,5 @@ style:
   max_sentence_words: 40
 
 llm:
-  max_retries: 3
-  temperature: 0.7
+  max_retries: 2
+  max_tokens: 4000

@@ -49,27 +49,43 @@ def run_writer(scenario: Scenario, brief: Brief, cfg: dict, llm, conn=None) -> t
         user_prompt=user_prompt
     )
 
-    if isinstance(raw_response, str):
-        try:
-            data = json.loads(raw_response)
-        except json.JSONDecodeError as e:
-            raise ValueError(f"LLM returned invalid JSON: {raw_response}") from e
-    else:
-        data = raw_response
+def _parse_drafts(raw: dict) -> tuple[Draft, Draft]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"expected a JSON object with 'article' and 'post', got {raw!r}")
 
-    article_data = data.get("article", {})
-    post_data = data.get("post", {})
+    article_raw = raw.get("article")
+    post_raw = raw.get("post")
+    # Some models nest "post" inside "article" instead of at the top level.
+    if isinstance(article_raw, dict) and post_raw is None and isinstance(article_raw.get("post"), dict):
+        post_raw = article_raw["post"]
+        article_raw = {k: v for k, v in article_raw.items() if k != "post"}
 
-    article = Draft(
-        kind="article",
-        title=article_data.get("title", f"Статья: {scenario.topic}"),
-        body=article_data.get("body", "")
-    )
-    post = Draft(
-        kind="post",
-        title=post_data.get("title", f"Пост: {scenario.topic}"),
-        body=post_data.get("body", "")
-    )
+    if not isinstance(article_raw, dict) or not isinstance(post_raw, dict):
+        raise ValueError(f"expected 'article' and 'post' objects, got {raw!r}")
+
+    article = Draft(kind="article", title=article_raw["title"], body=article_raw["body"])
+    post = Draft(kind="post", title=post_raw["title"], body=post_raw["body"])
+    return article, post
+
+
+def run_writer(
+    scenario: Scenario, brief: Brief, cfg: dict, llm: LLM, conn=None
+) -> tuple[Draft, Draft]:
+    """Builds article + post drafts for one scenario via the writer LLM.
+
+    If `conn` is given, saves both artifacts (kind="draft_article",
+    kind="draft_post") keyed by scenario.idx, matching the current
+    orchestrator call site.
+    """
+    system = _load_prompt(cfg)
+    user = _build_user_message(scenario, brief)
+    model = cfg["models"]["writer"]
+
+    try:
+        raw = llm.complete_json(model, system, user)
+        article, post = _parse_drafts(raw)
+    except (LLMContractError, ValueError, KeyError, TypeError) as exc:
+        raise LLMContractError(f"writer failed to produce valid drafts for '{scenario.topic}': {exc}") from exc
 
     if conn is not None:
         save_artifact(
