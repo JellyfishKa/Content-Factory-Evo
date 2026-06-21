@@ -1,94 +1,102 @@
 """STYLE checks as pure functions. No LLM calls here.
 
-Each check_* returns a CheckResult(rule, passed, detail). run_all collects
-all checks that apply to the given Final (article checks differ from post
-checks only in check_length and check_hashtags_single_block).
-
-This is the anti-overfitting gate: a new STYLE rule means a new function
-here plus tests, never a new sentence in a prompt.
+Каждая функция проверяет одно конкретное правило стиля и возвращает CheckResult.
+Это позволяет легко масштабировать правила, не раздувая промпты.
 """
 from __future__ import annotations
 
 import re
-
 from schemas import CheckResult, Final
 
-SIGNOFF_PHRASES = ["надеюсь, было полезно", "подписывайтесь"]
+SIGNOFF_PHRASES = [
+    "надеюсь, было полезно",
+    "подписывайтесь",
+    "сегодня я расскажу",
+    "давайте разберемся",
+    "в этой статье мы"
+]
 CAPS_PHRASE = "критически важно"
 
 
 def check_blacklist(text: str, cfg: dict) -> CheckResult:
-    """No phrase from style.blacklist appears in text."""
+    """Проверка на отсутствие фраз из черного списка в конфиге."""
     blacklist = cfg.get("style", {}).get("blacklist", [])
     lowered = text.lower()
     hits = [phrase for phrase in blacklist if phrase.lower() in lowered]
+
     if hits:
         return CheckResult(
             rule="check_blacklist",
             passed=False,
             detail=f"Найдены запрещённые фразы: {', '.join(hits)}",
         )
-    return CheckResult(rule="check_blacklist", passed=True, detail="")
+    return CheckResult(rule="check_blacklist", passed=True, detail="OK")
 
 
 def check_number_in_first_screen(text: str, cfg: dict) -> CheckResult:
-    """A digit appears within the first ~600 chars, if the rule is enabled."""
+    """В первых ~600 символах должна быть хотя бы одна цифра."""
     if not cfg.get("style", {}).get("require_number_in_first_screen", True):
-        return CheckResult(rule="check_number_in_first_screen", passed=True, detail="")
+        return CheckResult(rule="check_number_in_first_screen", passed=True, detail="Проверка отключена")
+
     first_screen = text[:600]
     if re.search(r"\d", first_screen):
-        return CheckResult(rule="check_number_in_first_screen", passed=True, detail="")
+        return CheckResult(rule="check_number_in_first_screen", passed=True, detail="OK")
+
     return CheckResult(
         rule="check_number_in_first_screen",
         passed=False,
-        detail="В первых ~600 символах нет ни одной цифры",
+        detail="В первом экране (600 симв.) должна быть цифра для подтверждения экспертности/фактов",
     )
 
 
 def check_no_signoff(text: str) -> CheckResult:
-    """No sign-off phrases like 'надеюсь, было полезно' / 'подписывайтесь'."""
+    """Запрет на стандартные 'блогерские' прощания и вступления."""
     lowered = text.lower()
     hits = [phrase for phrase in SIGNOFF_PHRASES if phrase in lowered]
+
     if hits:
         return CheckResult(
             rule="check_no_signoff",
             passed=False,
-            detail=f"Найдена фраза прощания: {', '.join(hits)}",
+            detail=f"Найдена запрещенная клише-фраза: {', '.join(hits)}",
         )
-    return CheckResult(rule="check_no_signoff", passed=True, detail="")
+    return CheckResult(rule="check_no_signoff", passed=True, detail="OK")
 
 
 def check_hashtags_single_block(text: str) -> CheckResult:
-    """If hashtags are present, they all sit in one block at the end."""
-    lines = text.strip().splitlines()
-    hashtag_line_idxs = [i for i, line in enumerate(lines) if "#" in line]
+    """Хештеги (если есть) должны идти единым блоком в самом конце текста."""
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    hashtag_line_idxs = [i for i, line in enumerate(lines) if line.startswith("#")]
+
     if not hashtag_line_idxs:
-        return CheckResult(rule="check_hashtags_single_block", passed=True, detail="")
+        return CheckResult(rule="check_hashtags_single_block", passed=True, detail="Хештегов нет")
 
+    num_hashtags = len(hashtag_line_idxs)
     last_idx = len(lines) - 1
-    block_start = hashtag_line_idxs[0]
-    contiguous = hashtag_line_idxs == list(range(block_start, block_start + len(hashtag_line_idxs)))
-    at_end = hashtag_line_idxs[-1] == last_idx
 
-    if contiguous and at_end:
-        return CheckResult(rule="check_hashtags_single_block", passed=True, detail="")
+    is_contiguous = hashtag_line_idxs == list(range(hashtag_line_idxs[0], hashtag_line_idxs[0] + num_hashtags))
+    is_at_end = hashtag_line_idxs[-1] == last_idx
+
+    if is_contiguous and is_at_end:
+        return CheckResult(rule="check_hashtags_single_block", passed=True, detail="OK")
+
     return CheckResult(
         rule="check_hashtags_single_block",
         passed=False,
-        detail="Хештеги разбросаны по тексту, а не собраны одним блоком в конце",
+        detail="Хештеги должны быть собраны в один блок в самом конце текста",
     )
 
 
 def check_no_caps_for_claude(text: str, cfg: dict) -> CheckResult:
-    """No ALLCAPS words / 'КРИТИЧЕСКИ ВАЖНО' when the model in use is Claude."""
+    """Запрет на слова капсом (длиннее 3 букв) и фразу 'КРИТИЧЕСКИ ВАЖНО'."""
     if not cfg.get("style", {}).get("no_caps_for_claude", True):
-        return CheckResult(rule="check_no_caps_for_claude", passed=True, detail="")
+        return CheckResult(rule="check_no_caps_for_claude", passed=True, detail="Проверка отключена")
 
     if CAPS_PHRASE in text.lower():
         return CheckResult(
             rule="check_no_caps_for_claude",
             passed=False,
-            detail="Найдена фраза 'КРИТИЧЕСКИ ВАЖНО'",
+            detail="Найдена запрещенная фраза 'КРИТИЧЕСКИ ВАЖНО'",
         )
 
     caps_words = re.findall(r"\b[А-ЯA-Z]{4,}\b", text)
@@ -98,32 +106,33 @@ def check_no_caps_for_claude(text: str, cfg: dict) -> CheckResult:
             passed=False,
             detail=f"Найден текст КАПСОМ: {', '.join(caps_words[:5])}",
         )
-    return CheckResult(rule="check_no_caps_for_claude", passed=True, detail="")
+    return CheckResult(rule="check_no_caps_for_claude", passed=True, detail="OK")
 
 
 def check_length(text: str, kind: str, cfg: dict) -> CheckResult:
-    """Length is within the corridor from cfg.limits (article_chars / post_words)."""
+    """Проверка длины текста согласно лимитам в конфиге."""
     limits = cfg.get("limits", {})
     if kind == "article":
-        lo, hi = limits.get("article_chars", [0, 10**9])
-        length = len(text)
-        unit = "символов"
+        lo, hi = limits.get("article_chars", [800, 4000])
+        val = len(text)
+        unit = "симв."
     else:
-        lo, hi = limits.get("post_words", [0, 10**9])
-        length = len(text.split())
+        lo, hi = limits.get("post_words", [30, 300])
+        val = len(text.split())
         unit = "слов"
 
-    if lo <= length <= hi:
-        return CheckResult(rule="check_length", passed=True, detail="")
+    if lo <= val <= hi:
+        return CheckResult(rule="check_length", passed=True, detail=f"Длина: {val} {unit}")
+
     return CheckResult(
         rule="check_length",
         passed=False,
-        detail=f"Длина {length} {unit} вне коридора [{lo}, {hi}]",
+        detail=f"Длина {val} {unit} вне диапазона [{lo}-{hi}]",
     )
 
 
 def run_all(final: Final, cfg: dict) -> list[CheckResult]:
-    """Runs all checks applicable to final.kind (hashtags only matter for posts)."""
+    """Запуск всех проверок для финального текста."""
     text = final.body
     results = [
         check_blacklist(text, cfg),
@@ -134,4 +143,5 @@ def run_all(final: Final, cfg: dict) -> list[CheckResult]:
     ]
     if final.kind == "post":
         results.append(check_hashtags_single_block(text))
+
     return results

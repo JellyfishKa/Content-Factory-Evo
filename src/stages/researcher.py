@@ -1,23 +1,58 @@
 """Researcher stage: scenario -> Brief.
 
-Placeholder body returns a valid Brief and saves the artifact so the
-pipeline runs end-to-end. TODO: drive it from prompts/researcher.md via
-llm.complete_json, keeping the signature.
+Generates a research Brief based on a specific Scenario and source text,
+strictly avoiding hallucinations. Uses prompts/researcher.md.
 """
 from __future__ import annotations
 
-from db import save_artifact
-from schemas import Brief, Scenario
+import json
+from pathlib import Path
+
+from src.db import save_artifact
+from src.schemas import Brief, Scenario
 
 
 def run_researcher(scenario: Scenario, cfg: dict, llm, conn=None) -> Brief:
-    """Returns a placeholder Brief without calling the LLM."""
-    brief = Brief(
-        facts=[f"[stub] факт по теме: {scenario.topic}"],
-        confirmed=[],
-        not_confirmed=[f"[stub] нет реальных данных для сценария {scenario.idx}"],
-        quotes=[],
+    """Runs the researcher stage using LLM to generate a Brief from a Scenario."""
+
+    prompt_path = Path("prompts/researcher.md")
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
+
+    system_prompt = prompt_path.read_text(encoding="utf-8")
+
+    source_text = cfg.get("source_text", "")
+
+    user_prompt = (
+        f"Текст источника:\n{source_text}\n\n"
+        f"--- \n"
+        f"Сценарий для брифа:\n"
+        f"Тема (topic): {scenario.topic}\n"
+        f"Ракурс (angle): {scenario.angle}\n"
+        f"Подсказка (brief_hint): {scenario.brief_hint}\n"
     )
+
+    raw_response = llm.complete_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt
+    )
+
+    if isinstance(raw_response, str):
+        try:
+            parsed_data = json.loads(raw_response)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LLM returned invalid JSON: {raw_response}") from e
+    else:
+        parsed_data = raw_response
+
+    brief = Brief(**parsed_data)
+
     if conn is not None:
-        save_artifact(conn, scenario_id=scenario.idx, kind="brief", content=brief.model_dump_json())
+        save_artifact(
+            conn,
+            scenario_id=scenario.idx,
+            kind="brief",
+            content=brief.model_dump_json()
+        )
+
     return brief

@@ -34,9 +34,16 @@ style:
     - "давайте"
     - "надеюсь, было полезно"
     - "подписывайтесь"
+    - "уникальный"
+    - "инновационный"
+    - "в этой статье мы"
+    - "давайте разберемся"
+    - "стоит отметить"
+    - "является важным"
   require_number_in_first_screen: true
   hashtags_as_single_block: true
   no_caps_for_claude: true
 
 llm:
-  max_retries: 1
+  max_retries: 3
+  temperature: 0.7
