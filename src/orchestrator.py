@@ -23,6 +23,13 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="content-factory-lite orchestrator")
     parser.add_argument("--input", help="path to source file under inputs/", default=None)
+    parser.add_argument("--topic", help="bare topic string (topic mode, no file needed)", default=None)
+    parser.add_argument(
+        "--source-type",
+        choices=["transcript", "article", "topic"],
+        default=None,
+        help="source type override; default: transcript for --input, topic for --topic",
+    )
     parser.add_argument("--scenarios", type=int, default=None, help="override number of scenarios")
     parser.add_argument("--from-stage", default=None, help="force re-run starting from this stage")
     return parser.parse_args(argv)
@@ -35,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"config: scenarios={cfg['run']['scenarios']} language={cfg['run']['language']}")
     print(f"models: {cfg['models']}")
 
-    if not args.input:
+    if not args.input and not args.topic:
         print("pipeline OK")
         return 0
 
@@ -49,10 +56,17 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
     from llm import LLM
     from stages.planner import run_planner
 
-    input_path = Path(args.input)
-    if not input_path.exists():
-        print(f"ERROR: input file not found: {input_path}")
-        return 1
+    if args.topic:
+        source_type = args.source_type or "topic"
+        source = Source(type=source_type, ref="topic", text=args.topic)
+    else:
+        input_path = Path(args.input)
+        if not input_path.exists():
+            print(f"ERROR: input file not found: {input_path}")
+            return 1
+        source_type = args.source_type or "transcript"
+        source_text = input_path.read_text(encoding="utf-8")
+        source = Source(type=source_type, ref=str(input_path), text=source_text)
 
     n_scenarios = args.scenarios or cfg["run"]["scenarios"]
     from_stage = args.from_stage
@@ -75,9 +89,6 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
 
     init_db()
     conn = get_connection()
-
-    source_text = input_path.read_text(encoding="utf-8")
-    source = Source(type="transcript", ref=str(input_path), text=source_text)
 
     llm = LLM(cfg=cfg)
 

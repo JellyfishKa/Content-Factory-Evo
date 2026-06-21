@@ -19,9 +19,14 @@ def _load_prompt() -> str:
 
 
 def _build_user_message(source: Source, n: int) -> str:
+    if source.type == "topic":
+        mode_line = f"Разверни ТЕМУ в ровно {n} самостоятельных сценариев."
+    else:
+        mode_line = f"Разбей ИСТОЧНИК на ровно {n} сценариев."
     return (
         f"N = {n}\n\n"
         f"Тип источника: {source.type}\n\n"
+        f"{mode_line}\n\n"
         f"Текст источника:\n{source.text}"
     )
 
