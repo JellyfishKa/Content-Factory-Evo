@@ -56,3 +56,8 @@ style:
 llm:
   max_retries: 2
   max_tokens: 4000
+
+research:
+  web_search: true
+  provider: duckduckgo
+  max_results: 5

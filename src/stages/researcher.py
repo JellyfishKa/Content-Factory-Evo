@@ -10,6 +10,7 @@ from pathlib import Path
 
 from artifacts import persist_artifact
 from llm import LLM, LLMContractError
+from research import get_provider
 from schemas import Brief, Scenario
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "researcher.md"
@@ -19,12 +20,40 @@ def _load_prompt() -> str:
     return PROMPT_PATH.read_text(encoding="utf-8")
 
 
-def _build_user_message(scenario: Scenario) -> str:
-    return (
+def _build_search_query(scenario: Scenario) -> str:
+    return f"{scenario.topic} {scenario.angle} {scenario.brief_hint}".strip()
+
+
+def _format_sources_block(results: list[dict]) -> str:
+    lines = ["Источники из интернета (опирайся на них, не выдумывай):"]
+    for item in results:
+        title = item.get("title", "")
+        snippet = item.get("snippet", "")
+        url = item.get("url", "")
+        lines.append(f"- {title}: {snippet} ({url})")
+    return "\n".join(lines)
+
+
+def _build_user_message(scenario: Scenario, cfg: dict | None = None) -> str:
+    base = (
         f"Тема: {scenario.topic}\n"
         f"Ракурс: {scenario.angle}\n"
         f"Подсказка для брифа: {scenario.brief_hint}"
     )
+
+    cfg = cfg or {}
+    research_cfg = cfg.get("research", {})
+    if not research_cfg.get("web_search"):
+        return base
+
+    provider = get_provider(cfg)
+    max_results = research_cfg.get("max_results", 5)
+    query = _build_search_query(scenario)
+    results = provider.search(query, max_results)
+    if not results:
+        return base
+
+    return f"{base}\n\n{_format_sources_block(results)}"
 
 
 def _parse_brief(raw: dict) -> Brief:
@@ -46,7 +75,7 @@ def run_researcher(scenario: Scenario, cfg: dict, llm: LLM, conn=None, scenario_
     orchestrator call site (stages/orchestrator wiring is out of scope here).
     """
     system = _load_prompt()
-    user = _build_user_message(scenario)
+    user = _build_user_message(scenario, cfg)
     model = cfg["models"]["researcher"]
 
     try:
