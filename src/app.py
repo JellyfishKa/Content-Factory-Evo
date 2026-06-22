@@ -90,6 +90,45 @@ def _render_checks(conn, scenario_id: int, kind: str) -> None:
     st.markdown(" &nbsp; ".join(badges))
 
 
+def _build_scenario(conn, llm, cfg: dict, scenario_id: int, label: str, status=None) -> list[str]:
+    """Runs brief -> drafts -> finals -> meta for one scenario via rerun_from.
+
+    Per-stage errors don't raise: rerun_from runs stage functions in sequence,
+    so on failure we catch here, report which stage failed, and stop this
+    scenario's chain (consistent with the manual per-stage buttons, which
+    also stop the chain on the first LLMContractError). Returns the list of
+    stage names that completed successfully.
+    """
+    stage_labels = {"brief": "researcher", "drafts": "writer", "finals": "editor", "meta": "seo"}
+    succeeded: list[str] = []
+    try:
+        if status is not None:
+            status.update(label=f"{label}: researcher...")
+        run_brief_step(scenario_id, cfg, llm, conn)
+        succeeded.append("brief")
+
+        if status is not None:
+            status.update(label=f"{label}: writer...")
+        run_drafts_step(scenario_id, cfg, llm, conn)
+        succeeded.append("drafts")
+
+        if status is not None:
+            status.update(label=f"{label}: editor...")
+        run_finals_step(scenario_id, cfg, llm, conn)
+        succeeded.append("finals")
+
+        if status is not None:
+            status.update(label=f"{label}: seo...")
+        run_meta_step(scenario_id, cfg, llm, conn)
+        succeeded.append("meta")
+    except LLMContractError as exc:
+        next_stage = next((s for s in ["brief", "drafts", "finals", "meta"] if s not in succeeded), "meta")
+        st.warning(f"{label}: стадия '{stage_labels[next_stage]}' упала — {exc}")
+    except Exception as exc:  # noqa: BLE001 - never abort the whole build on one scenario's error
+        st.warning(f"{label}: ошибка — {exc}")
+    return succeeded
+
+
 def sidebar(cfg: dict) -> None:
     st.sidebar.header("Панель управления")
     mode = st.sidebar.radio("Режим", ["Готовый текст", "Тема"])
@@ -104,6 +143,8 @@ def sidebar(cfg: dict) -> None:
     n_scenarios = st.sidebar.number_input(
         "Число сценариев", min_value=1, max_value=20, value=cfg["run"]["scenarios"]
     )
+
+    auto_build = st.sidebar.checkbox("Авто-сборка после планнера", value=True)
 
     if st.sidebar.button("Старт", type="primary"):
         if not text or not text.strip():
@@ -128,6 +169,24 @@ def sidebar(cfg: dict) -> None:
         st.session_state["run_id"] = run_id
         st.session_state["scenario_count"] = len(scenarios)
         st.sidebar.success(f"Запуск {run_id}: {len(scenarios)} сценариев")
+
+        if auto_build:
+            # run_planner_step only returns Scenario objects (idx, not DB id);
+            # re-read the persisted rows to get the actual scenarios.id values
+            # that run_brief_step/run_drafts_step/... expect.
+            db_scenarios = _list_scenarios(conn, run_id)
+            total = len(db_scenarios)
+            with st.status("Сборка сценариев...", expanded=True) as status:
+                for i, db_sc in enumerate(db_scenarios, start=1):
+                    label = f"Сценарий {i}/{total}"
+                    status.update(label=f"{label}: researcher...")
+                    succeeded = _build_scenario(conn, llm, cfg, db_sc["id"], label, status=status)
+                    st.progress(i / total)
+                    if len(succeeded) == 4:
+                        st.write(f"{label}: готово (brief, drafts, finals, meta).")
+                    else:
+                        st.write(f"{label}: выполнено стадий — {', '.join(succeeded) if succeeded else 'нет'}.")
+                status.update(label="Сборка завершена", state="complete")
 
     if st.session_state.get("run_id"):
         st.sidebar.caption(f"Текущий запуск: {st.session_state['run_id']}")
@@ -191,6 +250,16 @@ def render_scenario(conn, llm, cfg: dict, scenario: dict) -> None:
     scenario_id = scenario["id"]
     with st.expander(f"#{scenario['idx']} — {scenario['topic']}", expanded=False):
         st.markdown(f"**Ракурс:** {scenario['angle']}  \n**Подсказка для брифа:** {scenario['brief_hint']}")
+
+        if st.button("🚀 Собрать сценарий (brief -> drafts -> finals -> meta)", key=f"build_all_{scenario_id}"):
+            with st.status(f"Сборка сценария #{scenario['idx']}...", expanded=True) as status:
+                succeeded = _build_scenario(conn, llm, cfg, scenario_id, f"Сценарий #{scenario['idx']}", status=status)
+                status.update(label="Сборка завершена", state="complete")
+            if len(succeeded) == 4:
+                st.success("Готово: brief, drafts, finals, meta.")
+            else:
+                st.warning(f"Выполнено стадий: {', '.join(succeeded) if succeeded else 'нет'}.")
+            st.rerun()
 
         # --- Бриф ---
         st.subheader("📋 Бриф")

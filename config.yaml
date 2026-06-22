@@ -24,6 +24,13 @@ models:
 #                  nousresearch/hermes-3-llama-3.1-405b:free
 # Свежий список:  curl -s https://openrouter.ai/api/v1/models | ... | grep ':free'
 
+# Запасные модели: если стадийная модель отдаёт 429/пусто/сетевую ошибку,
+# клиент по очереди пробует эти (все проверены на 200 при $0, июнь 2026).
+model_fallbacks:
+  - "openai/gpt-oss-20b:free"
+  - "google/gemma-4-31b-it:free"
+  - "google/gemma-4-26b-a4b-it:free"
+
 limits:
   article_chars: [800, 1100]
   post_words:    [100, 300]
@@ -49,3 +56,9 @@ style:
 llm:
   max_retries: 2
   max_tokens: 4000
+
+# Все провайдеры бесплатные, без ключей (duckduckgo / wikipedia / auto-chain).
+research:
+  web_search: true
+  provider: auto
+  max_results: 5

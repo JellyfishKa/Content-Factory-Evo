@@ -25,12 +25,30 @@ class LLM:
         self.timeout = timeout
         self.max_retries = 1
         self.max_tokens = 4000
+        self.fallbacks: list[str] = []
         if cfg:
             self.max_retries = cfg.get("llm", {}).get("max_retries", 1)
             self.max_tokens = cfg.get("llm", {}).get("max_tokens", 4000)
+            self.fallbacks = cfg.get("model_fallbacks", []) or []
 
     def complete(self, model: str, system: str, user: str, *, json_mode: bool = False) -> str:
-        """Single chat completion call. Returns the raw text content."""
+        """Chat completion with model fallback. Tries the requested model, then
+        each entry in model_fallbacks (config) until one returns content. A model
+        is abandoned on exhausted 429/5xx, network failure, or empty/off-shape body.
+        """
+        candidates = [model] + [m for m in self.fallbacks if m != model]
+        last_exc: Exception | None = None
+        for candidate in candidates:
+            try:
+                return self._complete_one(candidate, system, user, json_mode=json_mode)
+            except (LLMContractError, httpx.HTTPStatusError, httpx.TransportError) as exc:
+                last_exc = exc
+                print(f"[llm] model '{candidate}' unavailable ({type(exc).__name__}), trying next")
+                continue
+        raise LLMContractError(f"all models failed ({candidates}): {last_exc}")
+
+    def _complete_one(self, model: str, system: str, user: str, *, json_mode: bool = False) -> str:
+        """Single chat completion call against one model. Returns the raw text."""
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
