@@ -2,20 +2,20 @@
 
 Sidebar: start a run (ready source or bare topic) via run_planner_step.
 Main: per-scenario expanders with the full stage ladder (brief -> drafts ->
-finals + STYLE -> meta), each artifact shown as an editable text area with
-per-stage "Перегенерировать" / "Сохранить правку" / "Запустить дальше"
-controls.
+finals + STYLE -> meta), each artifact rendered as Markdown with an
+expandable Markdown editor and a download button, plus the per-stage
+"Перегенерировать" / "Сохранить правку" / "Запустить дальше" controls.
 
-Reads/writes only through db.py + pipeline.py - no stage logic lives here.
+Reads/writes only through db.py + pipeline.py + markdownio.py - no stage
+logic lives here.
 """
 from __future__ import annotations
-
-import json
 
 import streamlit as st
 
 from db import create_run, get_connection, init_db
 from llm import LLM, LLMContractError
+from markdownio import from_md, to_md
 from orchestrator import load_config
 from pipeline import (
     load_brief,
@@ -57,6 +57,15 @@ def _list_scenarios(conn, run_id: int) -> list[dict]:
         return cur.fetchall()
 
 
+def _get_run_info(conn, run_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, source_type, source_ref, status, created_at FROM runs WHERE id = %s",
+            (run_id,),
+        )
+        return cur.fetchone()
+
+
 def _render_checks(conn, scenario_id: int, kind: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -72,11 +81,13 @@ def _render_checks(conn, scenario_id: int, kind: str) -> None:
         checks = cur.fetchall()
     if not checks:
         return
+    badges = []
     for check in checks:
         if check["passed"]:
-            st.success(f"{check['rule']}: PASS", icon="✅")
+            badges.append(f":green[✅ {check['rule']}]")
         else:
-            st.error(f"{check['rule']}: FAIL — {check['detail']}", icon="❌")
+            badges.append(f":red[❌ {check['rule']}: {check['detail']}]")
+    st.markdown(" &nbsp; ".join(badges))
 
 
 def sidebar(cfg: dict) -> None:
@@ -122,31 +133,67 @@ def sidebar(cfg: dict) -> None:
         st.sidebar.caption(f"Текущий запуск: {st.session_state['run_id']}")
 
 
-def _editable_artifact(label: str, model_cls, value, scenario_id: int, kind: str, conn) -> None:
-    """Renders one artifact as an editable JSON text area with a save button."""
-    raw_json = value.model_dump_json(indent=2) if value is not None else ""
-    text_key = f"text_{scenario_id}_{kind}"
-    edited = st.text_area(label, value=raw_json, height=180, key=text_key)
+def _render_artifact(label: str, kind: str, model_cls, value, scenario_id: int, conn, prev=None) -> None:
+    """Renders one artifact as Markdown (view), with an edit expander and a
+    download button. `prev` is passed through for Final (preserves style_passed)."""
+    if value is None:
+        st.info(f"{label}: пока нет.")
+        return
 
-    if st.button("Сохранить правку", key=f"save_{scenario_id}_{kind}"):
-        try:
-            parsed = json.loads(edited)
-            model_cls.model_validate(parsed)  # validate shape before persisting
-        except Exception as exc:  # noqa: BLE001
-            st.error(f"Не удалось сохранить: невалидный JSON/схема — {exc}")
-        else:
-            save_edited_artifact(conn, scenario_id=scenario_id, kind=kind, new_content_json=edited)
-            st.success("Сохранено.")
-            st.rerun()
+    md_text = to_md(kind, value)
+
+    st.markdown(md_text)
+
+    col_dl, _ = st.columns([1, 5])
+    with col_dl:
+        st.download_button(
+            "⬇️ Скачать .md",
+            data=md_text,
+            file_name=f"{kind}_{scenario_id}.md",
+            mime="text/markdown",
+            key=f"dl_{scenario_id}_{kind}",
+        )
+
+    with st.expander("✏️ Редактировать (Markdown)"):
+        text_key = f"text_{scenario_id}_{kind}"
+        edited_md = st.text_area(label, value=md_text, height=240, key=text_key)
+
+        if st.button("Сохранить правку", key=f"save_{scenario_id}_{kind}"):
+            try:
+                parsed = from_md(kind, edited_md, prev=prev if prev is not None else value)
+                model_cls.model_validate(parsed.model_dump())  # validate shape before persisting
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Не удалось сохранить: не получилось разобрать Markdown — {exc}")
+            else:
+                save_edited_artifact(conn, scenario_id=scenario_id, kind=kind, new_content_json=parsed.model_dump_json())
+                st.success("Сохранено.")
+                st.rerun()
+
+
+def _render_meta_table(meta: Meta) -> None:
+    st.table(
+        {
+            "Поле": ["title", "description", "slug", "keywords", "og_title", "og_description", "tags"],
+            "Значение": [
+                meta.title,
+                meta.description,
+                meta.slug,
+                ", ".join(meta.keywords),
+                meta.og_title,
+                meta.og_description,
+                ", ".join(meta.tags),
+            ],
+        }
+    )
 
 
 def render_scenario(conn, llm, cfg: dict, scenario: dict) -> None:
     scenario_id = scenario["id"]
     with st.expander(f"#{scenario['idx']} — {scenario['topic']}", expanded=False):
-        st.caption(f"Ракурс: {scenario['angle']} | Подсказка: {scenario['brief_hint']}")
+        st.markdown(f"**Ракурс:** {scenario['angle']}  \n**Подсказка для брифа:** {scenario['brief_hint']}")
 
         # --- Бриф ---
-        st.subheader("Бриф")
+        st.subheader("📋 Бриф")
         brief = load_brief(conn, scenario_id)
         col1, col2 = st.columns(2)
         with col1:
@@ -165,13 +212,10 @@ def render_scenario(conn, llm, cfg: dict, scenario: dict) -> None:
                     st.rerun()
                 except LLMContractError as exc:
                     st.error(f"Стадия упала: {exc}")
-        if brief is not None:
-            _editable_artifact("Бриф (JSON)", Brief, brief, scenario_id, "brief", conn)
-        else:
-            st.info("Брифа пока нет.")
+        _render_artifact("Бриф (Markdown)", "brief", Brief, brief, scenario_id, conn)
 
         # --- Черновики ---
-        st.subheader("Черновики")
+        st.subheader("📝 Черновики")
         draft_article = load_draft(conn, scenario_id, "draft_article")
         draft_post = load_draft(conn, scenario_id, "draft_post")
         col1, col2 = st.columns(2)
@@ -191,17 +235,13 @@ def render_scenario(conn, llm, cfg: dict, scenario: dict) -> None:
                     st.rerun()
                 except LLMContractError as exc:
                     st.error(f"Стадия упала: {exc}")
-        if draft_article is not None:
-            _editable_artifact("Черновик статьи (JSON)", Draft, draft_article, scenario_id, "draft_article", conn)
-        else:
-            st.info("Черновика статьи пока нет.")
-        if draft_post is not None:
-            _editable_artifact("Черновик поста (JSON)", Draft, draft_post, scenario_id, "draft_post", conn)
-        else:
-            st.info("Черновика поста пока нет.")
+        st.markdown("##### Черновик статьи")
+        _render_artifact("Черновик статьи (Markdown)", "draft_article", Draft, draft_article, scenario_id, conn)
+        st.markdown("##### Черновик поста")
+        _render_artifact("Черновик поста (Markdown)", "draft_post", Draft, draft_post, scenario_id, conn)
 
         # --- Финалы + STYLE ---
-        st.subheader("Финалы + STYLE")
+        st.subheader("✅ Финалы + STYLE")
         final_article = load_final(conn, scenario_id, "final_article")
         final_post = load_final(conn, scenario_id, "final_post")
         col1, col2 = st.columns(2)
@@ -221,21 +261,17 @@ def render_scenario(conn, llm, cfg: dict, scenario: dict) -> None:
                     st.rerun()
                 except LLMContractError as exc:
                     st.error(f"Стадия упала: {exc}")
+        st.markdown("##### Финал статьи")
         if final_article is not None:
-            _editable_artifact("Финал статьи (JSON)", Final, final_article, scenario_id, "final_article", conn)
-            st.caption("STYLE — статья")
             _render_checks(conn, scenario_id, "final_article")
-        else:
-            st.info("Финала статьи пока нет.")
+        _render_artifact("Финал статьи (Markdown)", "final_article", Final, final_article, scenario_id, conn, prev=final_article)
+        st.markdown("##### Финал поста")
         if final_post is not None:
-            _editable_artifact("Финал поста (JSON)", Final, final_post, scenario_id, "final_post", conn)
-            st.caption("STYLE — пост")
             _render_checks(conn, scenario_id, "final_post")
-        else:
-            st.info("Финала поста пока нет.")
+        _render_artifact("Финал поста (Markdown)", "final_post", Final, final_post, scenario_id, conn, prev=final_post)
 
         # --- Мета ---
-        st.subheader("Мета")
+        st.subheader("🔖 Мета")
         meta = load_meta(conn, scenario_id)
         if st.button("Перегенерировать мету", key=f"regen_meta_{scenario_id}"):
             try:
@@ -245,9 +281,8 @@ def render_scenario(conn, llm, cfg: dict, scenario: dict) -> None:
             except LLMContractError as exc:
                 st.error(f"SEO упал: {exc}")
         if meta is not None:
-            _editable_artifact("Мета (JSON)", Meta, meta, scenario_id, "meta", conn)
-        else:
-            st.info("Меты пока нет.")
+            _render_meta_table(meta)
+        _render_artifact("Мета (Markdown + frontmatter)", "meta", Meta, meta, scenario_id, conn)
 
 
 def main() -> None:
@@ -263,6 +298,14 @@ def main() -> None:
 
     conn = _get_conn()
     llm = _get_llm(cfg)
+
+    run_info = _get_run_info(conn, run_id)
+    if run_info is not None:
+        st.caption(
+            f"Запуск #{run_id} | тип источника: {run_info['source_type']} | "
+            f"источник: {run_info['source_ref']} | статус: {run_info['status']}"
+        )
+
     scenarios = _list_scenarios(conn, run_id)
     if not scenarios:
         st.write("В этом запуске пока нет сценариев.")
