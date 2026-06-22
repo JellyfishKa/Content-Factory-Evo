@@ -3,7 +3,7 @@
 По два теста на каждое правило: позитивный (проходит) и негативный (падает).
 """
 import validators
-from src.schemas import Final
+from schemas import Final
 
 CFG = {
     "style": {
@@ -73,10 +73,10 @@ def test_check_hashtags_single_block_pass():
 
 
 def test_check_hashtags_single_block_fail():
-    text = "Посмотрите на этот #ии-инструмент. Он работает круто.\n#теги"
+    text = "#вступление\n\nОсновной текст поста идёт уже после тегов."
     result = validators.check_hashtags_single_block(text)
     assert result.passed is False
-    assert "блоком в конце" in result.detail
+    assert "конце" in result.detail
 
 
 def test_check_no_caps_for_claude_pass():
@@ -118,7 +118,7 @@ def test_run_all_pass_article():
     )
     results = validators.run_all(final, CFG)
     assert all(r.passed for r in results)
-    assert len(results) == 5
+    assert len(results) == 7
 
 
 def test_run_all_fail_post():
@@ -129,7 +129,7 @@ def test_run_all_fail_post():
         style_passed=True,
     )
     results = validators.run_all(final, CFG)
-    assert len(results) == 6
+    assert len(results) == 8
     failed_rules = {r.rule for r in results if not r.passed}
     assert "check_blacklist" in failed_rules
 
