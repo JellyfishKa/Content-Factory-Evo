@@ -10,7 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import validators
-from db import save_artifact, save_check
+from artifacts import persist_artifact
+from db import save_check
 from llm import LLM, LLMContractError
 from schemas import CheckResult, Draft, Final
 
@@ -90,7 +91,7 @@ def run_editor(
 
     if conn is not None and scenario_id is not None:
         kind = "final_article" if draft.kind == "article" else "final_post"
-        artifact_id = save_artifact(conn, scenario_id=scenario_id, kind=kind, content=final.model_dump_json())
+        artifact_id = persist_artifact(conn, scenario_id=scenario_id, kind=kind, obj=final)
         for check in checks:
             save_check(conn, artifact_id=artifact_id, rule=check.rule, passed=check.passed, detail=check.detail)
 

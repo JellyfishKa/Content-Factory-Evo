@@ -23,6 +23,13 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="content-factory-lite orchestrator")
     parser.add_argument("--input", help="path to source file under inputs/", default=None)
+    parser.add_argument("--topic", help="bare topic string (topic mode, no file needed)", default=None)
+    parser.add_argument(
+        "--source-type",
+        choices=["transcript", "article", "topic"],
+        default=None,
+        help="source type override; default: transcript for --input, topic for --topic",
+    )
     parser.add_argument("--scenarios", type=int, default=None, help="override number of scenarios")
     parser.add_argument("--from-stage", default=None, help="force re-run starting from this stage")
     return parser.parse_args(argv)
@@ -35,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"config: scenarios={cfg['run']['scenarios']} language={cfg['run']['language']}")
     print(f"models: {cfg['models']}")
 
-    if not args.input:
+    if not args.input and not args.topic:
         print("pipeline OK")
         return 0
 
@@ -49,10 +56,17 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
     from llm import LLM
     from stages.planner import run_planner
 
-    input_path = Path(args.input)
-    if not input_path.exists():
-        print(f"ERROR: input file not found: {input_path}")
-        return 1
+    if args.topic:
+        source_type = args.source_type or "topic"
+        source = Source(type=source_type, ref="topic", text=args.topic)
+    else:
+        input_path = Path(args.input)
+        if not input_path.exists():
+            print(f"ERROR: input file not found: {input_path}")
+            return 1
+        source_type = args.source_type or "transcript"
+        source_text = input_path.read_text(encoding="utf-8")
+        source = Source(type=source_type, ref=str(input_path), text=source_text)
 
     n_scenarios = args.scenarios or cfg["run"]["scenarios"]
     from_stage = args.from_stage
@@ -75,9 +89,6 @@ def run_pipeline(args: argparse.Namespace, cfg: dict) -> int:
 
     init_db()
     conn = get_connection()
-
-    source_text = input_path.read_text(encoding="utf-8")
-    source = Source(type="transcript", ref=str(input_path), text=source_text)
 
     llm = LLM(cfg=cfg)
 
@@ -142,10 +153,7 @@ def process_scenario(
     caller to aggregate; never raises - errors are recorded in `failed`.
     """
     from db import get_connection, get_artifact
-    from stages.researcher import run_researcher
-    from stages.writer import run_writer
-    from stages.editor import run_editor
-    from stages.seo import run_seo
+    from pipeline import load_brief, load_draft, load_final, run_brief_step, run_drafts_step, run_finals_step, run_meta_step
 
     conn = get_connection()
     built: list[str] = []
@@ -157,9 +165,9 @@ def process_scenario(
             existing = get_artifact(conn, scenario_id=scenario_id, kind="brief")
             if existing and not should_force("researcher"):
                 built.append(f"scenario {scenario_id}: brief (skipped, exists)")
-                brief = run_researcher(scenario, cfg, llm)
+                brief = load_brief(conn, scenario_id)
             else:
-                brief = run_researcher(scenario, cfg, llm, conn=conn, scenario_id=scenario_id)
+                brief = run_brief_step(scenario_id, cfg, llm, conn)
                 built.append(f"scenario {scenario_id}: brief")
         except Exception as exc:
             print(f"ERROR in stage 'researcher' (scenario {scenario_id}): {exc}")
@@ -171,9 +179,10 @@ def process_scenario(
             existing_post = get_artifact(conn, scenario_id=scenario_id, kind="draft_post")
             if existing_article and existing_post and not should_force("writer"):
                 built.append(f"scenario {scenario_id}: draft_article, draft_post (skipped, exists)")
-                draft_article, draft_post = run_writer(scenario, brief, cfg, llm)
+                draft_article = load_draft(conn, scenario_id, "draft_article")
+                draft_post = load_draft(conn, scenario_id, "draft_post")
             else:
-                draft_article, draft_post = run_writer(scenario, brief, cfg, llm, conn=conn)
+                draft_article, draft_post = run_drafts_step(scenario_id, cfg, llm, conn)
                 built.append(f"scenario {scenario_id}: draft_article, draft_post")
         except Exception as exc:
             print(f"ERROR in stage 'writer' (scenario {scenario_id}): {exc}")
@@ -185,11 +194,10 @@ def process_scenario(
             existing_final_post = get_artifact(conn, scenario_id=scenario_id, kind="final_post")
             if existing_final_article and existing_final_post and not should_force("editor"):
                 built.append(f"scenario {scenario_id}: final_article, final_post (skipped, exists)")
-                final_article, checks_article = run_editor(draft_article, cfg, llm)
-                final_post, checks_post = run_editor(draft_post, cfg, llm)
+                final_article = load_final(conn, scenario_id, "final_article")
+                final_post = load_final(conn, scenario_id, "final_post")
             else:
-                final_article, checks_article = run_editor(draft_article, cfg, llm, conn=conn, scenario_id=scenario_id)
-                final_post, checks_post = run_editor(draft_post, cfg, llm, conn=conn, scenario_id=scenario_id)
+                final_article, checks_article, final_post, checks_post = run_finals_step(scenario_id, cfg, llm, conn)
                 built.append(f"scenario {scenario_id}: final_article, final_post")
             style_results.append((f"scenario {scenario_id}: article", final_article.style_passed))
             style_results.append((f"scenario {scenario_id}: post", final_post.style_passed))
@@ -202,9 +210,8 @@ def process_scenario(
             existing_meta = get_artifact(conn, scenario_id=scenario_id, kind="meta")
             if existing_meta and not should_force("seo"):
                 built.append(f"scenario {scenario_id}: meta (skipped, exists)")
-                run_seo(final_article, cfg, llm)
             else:
-                run_seo(final_article, cfg, llm, conn=conn, scenario_id=scenario_id)
+                run_meta_step(scenario_id, cfg, llm, conn)
                 built.append(f"scenario {scenario_id}: meta")
         except Exception as exc:
             print(f"ERROR in stage 'seo' (scenario {scenario_id}): {exc}")

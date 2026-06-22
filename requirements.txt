@@ -5,3 +5,4 @@ httpx>=0.27
 pytest>=8.0
 fastapi>=0.110
 uvicorn>=0.29
+streamlit>=1.32
