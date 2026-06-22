@@ -1,14 +1,15 @@
 """SEO stage: final text -> Meta.
 
-Calls the LLM with prompts/seo.md, parses the strict JSON response into a
-Meta object, and saves the meta artifact.
+Drives the SEO agent from prompts/seo.md via llm.complete_json to generate
+title, description, keywords, slug, and open graph tags based on the final text.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
-from artifacts import persist_artifact
+from db import save_artifact
 from llm import LLM, LLMContractError
 from schemas import Final, Meta
 
@@ -23,43 +24,62 @@ def _build_user_message(final: Final) -> str:
     return f"Заголовок: {final.title}\n\nТекст:\n{final.body}"
 
 
-def _slugify(title: str) -> str:
+def _fallback_slugify(title: str) -> str:
+    """Fallback slug generator in case LLM fails to provide a valid one."""
     slug = re.sub(r"[^a-zA-Z0-9-]+", "-", title.lower()).strip("-")
     return slug or "untitled"
 
 
-def _parse_meta(raw: dict, final: Final) -> Meta:
-    if not isinstance(raw, dict) or "title" not in raw or "description" not in raw:
-        raise ValueError(f"expected a JSON object with seo fields, got {raw!r}")
+def run_seo(final: Final, cfg: dict, llm, conn=None, scenario_id: int | None = None) -> Meta:
+    """Runs the SEO stage using LLM to generate metadata from Final text."""
 
-    slug = raw.get("slug") or _slugify(raw["title"])
-    return Meta(
-        title=raw["title"],
-        description=raw["description"],
-        keywords=raw.get("keywords", []),
-        slug=slug,
-        og_title=raw.get("og_title", raw["title"]),
-        og_description=raw.get("og_description", raw["description"]),
-        tags=raw.get("tags", []),
+    prompt_path = Path("prompts/seo.md")
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
+
+    system_prompt = prompt_path.read_text(encoding="utf-8")
+
+    final_text_content = getattr(final, "body", getattr(final, "text", getattr(final, "content", "")))
+
+    user_prompt = (
+        f"ГОТОВЫЙ ТЕКСТ СТАТЬИ ДЛЯ АНАЛИЗА:\n"
+        f"Заголовок: {final.title}\n\n"
+        f"Текст:\n{final_text_content}\n"
     )
 
+    raw_response = llm.complete_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt
+    )
 
-def run_seo(final: Final, cfg: dict, llm: LLM, conn=None, scenario_id: int | None = None) -> Meta:
-    """Builds SEO metadata for one finalized piece via the seo LLM.
+    if isinstance(raw_response, str):
+        try:
+            parsed_data = json.loads(raw_response)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LLM returned invalid JSON: {raw_response}") from e
+    else:
+        parsed_data = raw_response
 
-    If `conn` and `scenario_id` are given, saves the meta artifact.
-    """
-    system = _load_prompt()
-    user = _build_user_message(final)
-    model = cfg["models"]["seo"]
+    generated_slug = parsed_data.get("slug", "")
+    if not generated_slug or " " in generated_slug:
+        generated_slug = _fallback_slugify(parsed_data.get("title", final.title))
 
-    try:
-        raw = llm.complete_json(model, system, user)
-        meta = _parse_meta(raw, final)
-    except (LLMContractError, ValueError, KeyError, TypeError) as exc:
-        raise LLMContractError(f"seo failed to produce valid metadata for '{final.title}': {exc}") from exc
+    meta = Meta(
+        title=parsed_data.get("title", final.title),
+        description=parsed_data.get("description", ""),
+        keywords=parsed_data.get("keywords", []),
+        slug=generated_slug,
+        og_title=parsed_data.get("og_title", parsed_data.get("title", final.title)),
+        og_description=parsed_data.get("og_description", parsed_data.get("description", "")),
+        tags=parsed_data.get("tags", [])
+    )
 
     if conn is not None and scenario_id is not None:
-        persist_artifact(conn, scenario_id=scenario_id, kind="meta", obj=meta)
+        save_artifact(
+            conn,
+            scenario_id=scenario_id,
+            kind="meta",
+            content=meta.model_dump_json()
+        )
 
     return meta
