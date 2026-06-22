@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from db import save_artifact
+from artifacts import persist_artifact
 from llm import LLM, LLMContractError
 from schemas import Brief, Draft, Scenario
 
@@ -81,7 +81,7 @@ def run_writer(
         raise LLMContractError(f"writer failed to produce valid drafts for '{scenario.topic}': {exc}") from exc
 
     if conn is not None:
-        save_artifact(conn, scenario_id=scenario.idx, kind="draft_article", content=article.model_dump_json())
-        save_artifact(conn, scenario_id=scenario.idx, kind="draft_post", content=post.model_dump_json())
+        persist_artifact(conn, scenario_id=scenario.idx, kind="draft_article", obj=article)
+        persist_artifact(conn, scenario_id=scenario.idx, kind="draft_post", obj=post)
 
     return article, post

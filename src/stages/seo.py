@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from db import save_artifact
+from artifacts import persist_artifact
 from llm import LLM, LLMContractError
 from schemas import Final, Meta
 
@@ -60,6 +60,6 @@ def run_seo(final: Final, cfg: dict, llm: LLM, conn=None, scenario_id: int | Non
         raise LLMContractError(f"seo failed to produce valid metadata for '{final.title}': {exc}") from exc
 
     if conn is not None and scenario_id is not None:
-        save_artifact(conn, scenario_id=scenario_id, kind="meta", content=meta.model_dump_json())
+        persist_artifact(conn, scenario_id=scenario_id, kind="meta", obj=meta)
 
     return meta

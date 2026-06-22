@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from db import save_artifact
+from artifacts import persist_artifact
 from llm import LLM, LLMContractError
 from schemas import Brief, Scenario
 
@@ -56,6 +56,6 @@ def run_researcher(scenario: Scenario, cfg: dict, llm: LLM, conn=None, scenario_
         raise LLMContractError(f"researcher failed to produce a valid brief for '{scenario.topic}': {exc}") from exc
 
     if conn is not None:
-        save_artifact(conn, scenario_id=scenario_id or scenario.idx, kind="brief", content=brief.model_dump_json())
+        persist_artifact(conn, scenario_id=scenario_id or scenario.idx, kind="brief", obj=brief)
 
     return brief

@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+import artifacts
 import pipeline
 from schemas import Brief, Draft, Final, Meta, Scenario
 
@@ -98,7 +99,7 @@ class FakeConn:
 
 
 @pytest.fixture
-def fake_db(monkeypatch):
+def fake_db(monkeypatch, tmp_path):
     db = FakeDB()
     db.add_scenario(1, idx=1, topic="Тема", angle="Угол", brief_hint="Подсказка")
 
@@ -127,22 +128,23 @@ def fake_db(monkeypatch):
         return scenario_id
 
     monkeypatch.setattr(pipeline, "get_artifact", fake_get_artifact)
-    monkeypatch.setattr(pipeline, "save_artifact", fake_save_artifact)
     monkeypatch.setattr(pipeline, "save_check", fake_save_check)
     monkeypatch.setattr(pipeline, "upsert_scenario", fake_upsert_scenario)
 
-    # stages/* call db.save_artifact / db.save_check directly (not pipeline's
-    # imported names), so patch those modules too.
-    import stages.researcher as researcher_mod
-    import stages.writer as writer_mod
-    import stages.editor as editor_mod
-    import stages.seo as seo_mod
+    # persist_artifact (used by pipeline.py and stages/*) calls db.save_artifact
+    # under the hood and writes a .md file under artifacts.RUNS_DIR - patch the
+    # DB write and redirect RUNS_DIR to a tmp dir so tests stay offline and
+    # don't pollute the repo's runs/ directory.
+    monkeypatch.setattr(artifacts, "save_artifact", fake_save_artifact)
+    monkeypatch.setattr(artifacts, "RUNS_DIR", tmp_path)
+    # _lookup_run_and_idx tries raw SQL the FakeCursor doesn't support; force
+    # the scenario_<id> fallback path instead of erroring.
+    monkeypatch.setattr(artifacts, "_lookup_run_and_idx", lambda conn, scenario_id: (None, None))
 
-    monkeypatch.setattr(researcher_mod, "save_artifact", fake_save_artifact)
-    monkeypatch.setattr(writer_mod, "save_artifact", fake_save_artifact)
-    monkeypatch.setattr(editor_mod, "save_artifact", fake_save_artifact)
+    # editor.py still imports save_check from db directly.
+    import stages.editor as editor_mod
+
     monkeypatch.setattr(editor_mod, "save_check", fake_save_check)
-    monkeypatch.setattr(seo_mod, "save_artifact", fake_save_artifact)
 
     conn = FakeConn(db)
     return conn

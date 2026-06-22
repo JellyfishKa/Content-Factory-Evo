@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import json
 
-from db import get_artifact, save_artifact, save_check, upsert_scenario
+from artifacts import persist_artifact
+from db import get_artifact, save_check, upsert_scenario
 from llm import LLM
 from schemas import Brief, Draft, Final, Meta, Scenario, Source
 from stages.editor import run_editor
@@ -107,8 +108,8 @@ def run_drafts_step(scenario_id: int, cfg: dict, llm: LLM, conn) -> tuple[Draft,
     if brief is None:
         raise ValueError(f"brief not found for scenario {scenario_id}")
     article, post = run_writer(scenario, brief, cfg, llm, conn=None)
-    save_artifact(conn, scenario_id=scenario_id, kind="draft_article", content=article.model_dump_json())
-    save_artifact(conn, scenario_id=scenario_id, kind="draft_post", content=post.model_dump_json())
+    persist_artifact(conn, scenario_id=scenario_id, kind="draft_article", obj=article)
+    persist_artifact(conn, scenario_id=scenario_id, kind="draft_post", obj=post)
     return article, post
 
 
@@ -133,9 +134,24 @@ def run_meta_step(scenario_id: int, cfg: dict, llm: LLM, conn) -> Meta:
 
 # --- editing & re-run ---------------------------------------------------------------
 
+_KIND_TO_MODEL = {
+    "brief": Brief,
+    "draft_article": Draft,
+    "draft_post": Draft,
+    "final_article": Final,
+    "final_post": Final,
+    "meta": Meta,
+}
+
+
 def save_edited_artifact(conn, scenario_id: int, kind: str, new_content_json: str, version: int = 1) -> int:
-    """Overwrites an artifact in place (idempotent on (scenario_id, kind, version))."""
-    return save_artifact(conn, scenario_id=scenario_id, kind=kind, content=new_content_json, version=version)
+    """Overwrites an artifact in place (idempotent on (scenario_id, kind, version)).
+
+    Also rewrites the artifact's .md file on disk via persist_artifact.
+    """
+    model_cls = _KIND_TO_MODEL[kind]
+    obj = model_cls.model_validate(json.loads(new_content_json))
+    return persist_artifact(conn, scenario_id=scenario_id, kind=kind, obj=obj, version=version)
 
 
 def rerun_from(scenario_id: int, stage_name: str, cfg: dict, llm: LLM, conn) -> dict:
