@@ -57,7 +57,8 @@ llm:
   max_retries: 2
   max_tokens: 4000
 
+# Все провайдеры бесплатные, без ключей (duckduckgo / wikipedia / auto-chain).
 research:
   web_search: true
-  provider: duckduckgo
+  provider: auto
   max_results: 5

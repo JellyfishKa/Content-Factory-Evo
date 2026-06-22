@@ -21,13 +21,112 @@ def test_get_provider_returns_duckduckgo_search_for_duckduckgo():
     assert isinstance(provider, research.DuckDuckGoSearch)
 
 
+def test_get_provider_returns_wikipedia_search_for_wikipedia():
+    provider = research.get_provider({"research": {"provider": "wikipedia"}})
+    assert isinstance(provider, research.WikipediaSearch)
+
+
+def test_get_provider_returns_chain_search_for_auto():
+    provider = research.get_provider({"research": {"provider": "auto"}})
+    assert isinstance(provider, research.ChainSearch)
+    assert isinstance(provider.providers[0], research.DuckDuckGoSearch)
+    assert isinstance(provider.providers[1], research.WikipediaSearch)
+
+
 def test_get_provider_defaults_to_null_search_for_missing_config():
     provider = research.get_provider({})
     assert isinstance(provider, research.NullSearch)
 
 
+def test_get_provider_defaults_to_null_search_for_unknown_value():
+    provider = research.get_provider({"research": {"provider": "bogus"}})
+    assert isinstance(provider, research.NullSearch)
+
+
 def test_null_search_returns_empty_list():
     provider = research.NullSearch()
+    assert provider.search("anything", 5) == []
+
+
+class _FakeProviderForChain:
+    def __init__(self, results):
+        self.results = results
+        self.calls = 0
+
+    def search(self, query, max_results):
+        self.calls += 1
+        return self.results
+
+
+def test_chain_search_returns_first_providers_results_when_non_empty():
+    first = _FakeProviderForChain([{"title": "a", "snippet": "b", "url": "c"}])
+    second = _FakeProviderForChain([{"title": "x", "snippet": "y", "url": "z"}])
+    chain = research.ChainSearch([first, second])
+
+    results = chain.search("query", 5)
+
+    assert results == first.results
+    assert first.calls == 1
+    assert second.calls == 0
+
+
+def test_chain_search_falls_through_to_second_provider_when_first_is_empty():
+    first = _FakeProviderForChain([])
+    second = _FakeProviderForChain([{"title": "x", "snippet": "y", "url": "z"}])
+    chain = research.ChainSearch([first, second])
+
+    results = chain.search("query", 5)
+
+    assert results == second.results
+    assert first.calls == 1
+    assert second.calls == 1
+
+
+def test_chain_search_returns_empty_when_all_providers_empty():
+    first = _FakeProviderForChain([])
+    second = _FakeProviderForChain([])
+    chain = research.ChainSearch([first, second])
+
+    assert chain.search("query", 5) == []
+
+
+def test_wikipedia_search_degrades_to_empty_on_network_failure(monkeypatch):
+    import httpx
+
+    class BoomClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, *args, **kwargs):
+            raise httpx.TransportError("network down")
+
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: BoomClient())
+
+    provider = research.WikipediaSearch()
+    assert provider.search("anything", 5) == []
+
+
+def test_duckduckgo_search_degrades_to_empty_when_ddgs_raises(monkeypatch):
+    import sys
+    import types
+
+    fake_ddgs_module = types.ModuleType("ddgs")
+
+    class BoomDDGS:
+        def __enter__(self):
+            raise RuntimeError("rate limited")
+
+        def __exit__(self, *args):
+            return False
+
+    fake_ddgs_module.DDGS = BoomDDGS
+    monkeypatch.setitem(sys.modules, "ddgs", fake_ddgs_module)
+    monkeypatch.setattr(research.time, "sleep", lambda *_: None)
+
+    provider = research.DuckDuckGoSearch()
     assert provider.search("anything", 5) == []
 
 
