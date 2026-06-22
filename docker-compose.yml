@@ -60,6 +60,7 @@ services:
     env_file:
       - .env
     volumes:
+      - ./runs:/app/runs
       - ./src:/app/src
       - ./config.yaml:/app/config.yaml
       - ./prompts:/app/prompts
