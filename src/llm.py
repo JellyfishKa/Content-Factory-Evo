@@ -26,6 +26,9 @@ class LLM:
         self.max_retries = 1
         self.max_tokens = 4000
         self.fallbacks: list[str] = []
+        # Optional callback(msg: str) so a UI can surface live progress
+        # (which model is being tried, fallback events). Defaults to None.
+        self.on_event = None
         if cfg:
             self.max_retries = cfg.get("llm", {}).get("max_retries", 1)
             self.max_tokens = cfg.get("llm", {}).get("max_tokens", 4000)
@@ -40,12 +43,25 @@ class LLM:
         last_exc: Exception | None = None
         for candidate in candidates:
             try:
-                return self._complete_one(candidate, system, user, json_mode=json_mode)
+                self._emit(f"модель {candidate}: запрос...")
+                result = self._complete_one(candidate, system, user, json_mode=json_mode)
+                self._emit(f"модель {candidate}: ответила")
+                return result
             except (LLMContractError, httpx.HTTPStatusError, httpx.TransportError) as exc:
                 last_exc = exc
-                print(f"[llm] model '{candidate}' unavailable ({type(exc).__name__}), trying next")
+                msg = f"модель {candidate} недоступна ({type(exc).__name__}), пробую следующую"
+                print(f"[llm] {msg}")
+                self._emit(msg)
                 continue
         raise LLMContractError(f"all models failed ({candidates}): {last_exc}")
+
+    def _emit(self, msg: str) -> None:
+        """Fires the on_event callback if one is set; never raises."""
+        if self.on_event is not None:
+            try:
+                self.on_event(msg)
+            except Exception:  # noqa: BLE001 - UI hook must never break a run
+                pass
 
     def _complete_one(self, model: str, system: str, user: str, *, json_mode: bool = False) -> str:
         """Single chat completion call against one model. Returns the raw text."""

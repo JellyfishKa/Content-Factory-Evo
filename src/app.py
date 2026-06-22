@@ -14,6 +14,7 @@ from __future__ import annotations
 import streamlit as st
 
 from db import create_run, get_connection, init_db
+from enrich import enrich_article
 from llm import LLM, LLMContractError
 from markdownio import from_md, to_md
 from orchestrator import load_config
@@ -101,6 +102,10 @@ def _build_scenario(conn, llm, cfg: dict, scenario_id: int, label: str, status=N
     """
     stage_labels = {"brief": "researcher", "drafts": "writer", "finals": "editor", "meta": "seo"}
     succeeded: list[str] = []
+    # Surface model/fallback events into the status box so it's clear which
+    # free model actually answered at each stage.
+    if status is not None:
+        llm.on_event = status.write
     try:
         if status is not None:
             status.update(label=f"{label}: researcher...")
@@ -126,12 +131,69 @@ def _build_scenario(conn, llm, cfg: dict, scenario_id: int, label: str, status=N
         st.warning(f"{label}: стадия '{stage_labels[next_stage]}' упала — {exc}")
     except Exception as exc:  # noqa: BLE001 - never abort the whole build on one scenario's error
         st.warning(f"{label}: ошибка — {exc}")
+    finally:
+        llm.on_event = None
     return succeeded
+
+
+def enrich_panel(cfg: dict) -> None:
+    """Sidebar form: back a finished text with facts pulled from links.
+
+    Lets the user paste a ready article + a list of URLs, pick whether to
+    weave facts into the prose or append a sources block, and runs
+    enrich.enrich_article with a live progress log (fetch + model events).
+    """
+    st.sidebar.caption("Вставь готовый текст и ссылки — подкреплю фактами из них.")
+    text = st.sidebar.text_area("Готовый текст", height=220, key="enrich_text")
+    links_raw = st.sidebar.text_area("Ссылки (по одной на строку)", height=120, key="enrich_links")
+    mode_label = st.sidebar.radio(
+        "Что сделать",
+        ["Вплести факты в текст", "Дописать блок «Источники»"],
+        key="enrich_mode",
+    )
+    mode = "weave" if mode_label.startswith("Вплести") else "append"
+
+    if not st.sidebar.button("Подкрепить", type="primary", key="enrich_go"):
+        return
+
+    if not text or not text.strip():
+        st.sidebar.error("Вставьте готовый текст.")
+        return
+    links = [ln.strip() for ln in links_raw.splitlines() if ln.strip()]
+    if not links:
+        st.sidebar.error("Добавьте хотя бы одну ссылку.")
+        return
+
+    llm = _get_llm(cfg)
+    with st.status("Подкрепляю статью...", expanded=True) as status:
+        events: list[str] = []
+
+        def on_event(msg: str) -> None:
+            events.append(msg)
+            status.write(msg)
+
+        llm.on_event = on_event  # surface model/fallback events live
+        try:
+            result = enrich_article(text, links, mode, cfg, llm, on_event=on_event)
+        except Exception as exc:  # noqa: BLE001 - never crash the page
+            status.update(label="Ошибка", state="error")
+            st.error(f"Не удалось подкрепить: {exc}")
+            return
+        finally:
+            llm.on_event = None
+        status.update(label="Готово", state="complete")
+
+    st.session_state["enrich_result"] = result
+    st.sidebar.success("Готово — результат справа.")
 
 
 def sidebar(cfg: dict) -> None:
     st.sidebar.header("Панель управления")
-    mode = st.sidebar.radio("Режим", ["Готовый текст", "Тема"])
+    mode = st.sidebar.radio("Режим", ["Готовый текст", "Тема", "Подкрепить статью"])
+
+    if mode == "Подкрепить статью":
+        enrich_panel(cfg)
+        return
 
     if mode == "Готовый текст":
         text = st.sidebar.text_area("Текст источника (транскрипт/статья)", height=200)
@@ -359,6 +421,27 @@ def main() -> None:
     st.title("content-factory-lite — панель управления")
 
     sidebar(cfg)
+
+    enrich_result = st.session_state.get("enrich_result")
+    if enrich_result is not None:
+        st.subheader("🔗 Подкреплённый текст")
+        used = ", ".join(f"{u} ({s})" for u, s in enrich_result["links_used"]) or "нет"
+        st.caption(f"Режим: {enrich_result['mode']} | ссылки: {used}")
+        if "style_passed" in enrich_result:
+            badge = "✅ STYLE пройден" if enrich_result["style_passed"] else "❌ STYLE провален"
+            st.markdown(f":{'green' if enrich_result['style_passed'] else 'red'}[{badge}]")
+        st.markdown(enrich_result["markdown"])
+        st.download_button(
+            "⬇️ Скачать .md",
+            data=enrich_result["markdown"],
+            file_name="enriched.md",
+            mime="text/markdown",
+            key="dl_enriched",
+        )
+        if st.button("Очистить результат", key="clear_enriched"):
+            del st.session_state["enrich_result"]
+            st.rerun()
+        st.divider()
 
     run_id = st.session_state.get("run_id")
     if not run_id:
