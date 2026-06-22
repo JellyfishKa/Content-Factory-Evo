@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.gitignore
+.omc/
+.dist/
+*.egg-info/
+.env
+runs/*
+!runs/.gitkeep
+tests/
+content-factory-lite_план_и_таски.md

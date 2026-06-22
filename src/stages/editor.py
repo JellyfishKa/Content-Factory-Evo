@@ -18,6 +18,34 @@ from schemas import CheckResult, Draft, Final
 PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "editor.md"
 REFERENCES_DIR = Path(__file__).resolve().parent.parent.parent / "references"
 
+# Per-kind voice directives. The editor runs once per kind, so injecting a
+# distinct register here is what actually pulls article and post apart (the
+# STYLE gate only enforces length/format, not tone). Overridable via
+# cfg["style"]["voice"]["article" | "post"].
+ARTICLE_VOICE = (
+    "ГОЛОС СТАТЬИ: развёрнутый экспертный материал. Структура со смысловыми "
+    "подзаголовками (##), при необходимости таблицы и списки. Ключевые "
+    "термины и цифры выделяй **жирным**. Нейтрально-экспертный тон, "
+    "объяснения с контекстом и причинами. БЕЗ эмодзи и БЕЗ хештегов. В конце "
+    "— практический раздел «Что попробовать у себя» или содержательный вывод "
+    "(без прощаний и призывов подписаться). Заметно длиннее и обстоятельнее "
+    "поста."
+)
+POST_VOICE = (
+    "ГОЛОС ПОСТА: компактный текст 100–300 слов, 3–5 коротких абзацев. "
+    "Заголовок с цифрой в первом экране. Тот же профессиональный тон, что и "
+    "в статье, но плотнее — никакой воды. Ключевые термины **жирным**. БЕЗ "
+    "эмодзи и БЕЗ разговорных призывов-вопросов. В самом конце — блок "
+    "хештегов одной строкой и мягкий мостик на полную статью «Подробный "
+    "разбор — в статье». Заметно короче статьи."
+)
+
+
+def _voice_for(kind: str, cfg: dict) -> str:
+    """Returns the voice directive for `kind`, allowing a config override."""
+    default = ARTICLE_VOICE if kind == "article" else POST_VOICE
+    return (cfg or {}).get("style", {}).get("voice", {}).get(kind, default)
+
 
 def _load_prompt() -> str:
     return PROMPT_PATH.read_text(encoding="utf-8")
@@ -39,12 +67,14 @@ def load_references() -> list[str]:
     return [p.read_text(encoding="utf-8") for p in md_files]
 
 
-def _build_user_message(draft: Draft, refs: list[str]) -> str:
+def _build_user_message(draft: Draft, refs: list[str], cfg: dict | None = None) -> str:
     refs_block = "\n\n---\n\n".join(refs) if refs else "(референсы отсутствуют)"
+    voice = _voice_for(draft.kind, cfg or {})
     return (
         f"Черновик ({draft.kind}):\n"
         f"Заголовок: {draft.title}\n"
         f"Текст: {draft.body}\n\n"
+        f"{voice}\n\n"
         f"Референсы тона/структуры:\n{refs_block}"
     )
 
@@ -64,7 +94,7 @@ def run_editor(
     """
     refs = refs if refs is not None else load_references()
     system = _load_prompt()
-    user = _build_user_message(draft, refs)
+    user = _build_user_message(draft, refs, cfg)
     model = cfg["models"]["editor"]
 
     try:
