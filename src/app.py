@@ -136,6 +136,45 @@ def _build_scenario(conn, llm, cfg: dict, scenario_id: int, label: str, status=N
     return succeeded
 
 
+def _auto_build_parallel(cfg: dict, db_scenarios: list[dict]) -> None:
+    """Builds all scenarios concurrently, same method as the headless runner.
+
+    Reuses orchestrator.process_scenario (each worker opens its own DB
+    connection — psycopg connections aren't thread-safe — and never touches
+    st.*). Worker threads share one read-only LLM with no on_event callback so
+    no Streamlit calls happen off the main thread; the UI is updated here, in
+    the main thread, as futures complete.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from orchestrator import process_scenario
+
+    total = len(db_scenarios)
+    n_workers = cfg.get("run", {}).get("workers", 3)
+    worker_llm = LLM(cfg=cfg)  # read-only across threads; no on_event => no st.* off-thread
+    no_force = lambda _stage: False  # noqa: E731 - fresh build never force-reruns
+
+    with st.status(
+        f"Параллельная сборка {total} сценариев ({n_workers} воркеров)...", expanded=True
+    ) as status:
+        done = 0
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(process_scenario, db_sc, db_sc["id"], cfg, worker_llm, no_force): db_sc
+                for db_sc in db_scenarios
+            }
+            for future in as_completed(futures):
+                db_sc = futures[future]
+                built, failed, _style = future.result()
+                done += 1
+                st.progress(done / total)
+                if failed:
+                    st.write(f"Сценарий #{db_sc['idx']}: ошибки — {', '.join(failed)}")
+                else:
+                    st.write(f"Сценарий #{db_sc['idx']}: готово (brief, drafts, finals, meta).")
+        status.update(label="Сборка завершена", state="complete")
+
+
 def enrich_panel(cfg: dict) -> None:
     """Sidebar form: back a finished text with facts pulled from links.
 
@@ -235,20 +274,10 @@ def sidebar(cfg: dict) -> None:
         if auto_build:
             # run_planner_step only returns Scenario objects (idx, not DB id);
             # re-read the persisted rows to get the actual scenarios.id values
-            # that run_brief_step/run_drafts_step/... expect.
+            # that the stage steps expect.
             db_scenarios = _list_scenarios(conn, run_id)
             total = len(db_scenarios)
-            with st.status("Сборка сценариев...", expanded=True) as status:
-                for i, db_sc in enumerate(db_scenarios, start=1):
-                    label = f"Сценарий {i}/{total}"
-                    status.update(label=f"{label}: researcher...")
-                    succeeded = _build_scenario(conn, llm, cfg, db_sc["id"], label, status=status)
-                    st.progress(i / total)
-                    if len(succeeded) == 4:
-                        st.write(f"{label}: готово (brief, drafts, finals, meta).")
-                    else:
-                        st.write(f"{label}: выполнено стадий — {', '.join(succeeded) if succeeded else 'нет'}.")
-                status.update(label="Сборка завершена", state="complete")
+            _auto_build_parallel(cfg, db_scenarios)
 
     if st.session_state.get("run_id"):
         st.sidebar.caption(f"Текущий запуск: {st.session_state['run_id']}")
